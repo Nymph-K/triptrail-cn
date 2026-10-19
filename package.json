@@ -1,0 +1,14 @@
+{
+  "name": "triptrail-cn",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TripTrail with a Chinese-first UI, China map mode, offline city index and tiered city labels.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

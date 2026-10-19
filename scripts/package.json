@@ -1,0 +1,9 @@
+{
+  "name": "triptrail-cn-data-tools",
+  "private": true,
+  "type": "module",
+  "description": "Offline build tools for the China place index and simplified boundaries.",
+  "dependencies": {
+    "pinyin-pro": "^3.27.0"
+  }
+}

@@ -1,89 +1,106 @@
-<p align="center">
-  <img src="assets/banner.svg" alt="TripTrail — cinematic travel map animations" width="100%"/>
-</p>
+# TripTrail · 中文增强版
 
-<h1 align="center">TripTrail</h1>
+把一段旅程做成电影感的地图动画，直接在浏览器里完成。
 
-<p align="center">
-  Turn any trip into a cinematic animated map video — right in your browser.<br/>
-  A free, no-watermark, no-API-key travel map animation studio.
-</p>
+本仓库基于 [Fangyuan025/triptrail](https://github.com/Fangyuan025/triptrail) 修改，重点增强了中文界面与中国地图体验。
 
-<p align="center">
-  <a href="https://travel-map-animator.vercel.app"><b>▶&nbsp;&nbsp;Live demo — travel-map-animator.vercel.app</b></a>
-</p>
+![TripTrail 中文界面](assets/preview-cn.png)
 
-<p align="center">
-  <a href="https://travel-map-animator.vercel.app"><img alt="deploy" src="https://img.shields.io/badge/deployed%20on-Vercel-000?logo=vercel"/></a>
-  <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"><img alt="stack" src="https://img.shields.io/badge/vanilla%20JS-zero%20build-f7df1e?logo=javascript&logoColor=000"/></a>
-  <a href="https://maplibre.org"><img alt="maplibre" src="https://img.shields.io/badge/MapLibre%20GL-v5-396CB2"/></a>
-  <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API"><img alt="webcodecs" src="https://img.shields.io/badge/export-WebCodecs%20offline%20render-8A2BE2"/></a>
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"/></a>
-</p>
+## 本版新增
 
----
+- **完整中文界面 + 中英文切换**：界面默认中文，右上角 `EN / 中` 一键切换。标题、按钮、提示、路线说明、途经点名称、城市标注都会跟随语言变化。
+- **中国模式**：默认锁定中国范围，自动使用中文地图、中国省/市边界、本地城市库与分级城市标注；也可以随时切回全球模式。
+- **更好的中国底图**：新增高德中文路网、高德卫星影像，保留 Esri 卫星、CARTO、OpenFreeMap 等多种全球地图样式。
+- **离线中国城市库**：内置 3,200 个城市/区县与 137 个常见景点，支持中文、拼音和英文搜索，例如 `杭州`、`hangzhou`、`西湖`、`故宫`、`Hangzhou`。断网时城市搜索仍可用。
+- **城市分级标注**：省会/直辖市 → 地级市 → 区县随缩放逐级出现，支持“自动分级 / 仅省会 / 省会+地级市 / 全部”四档。城市标注使用 Canvas 绘制，导出的视频里也会显示。
+- **途经点始终置顶**：所有已添加的途经点与名称始终绘制在城市标注之上，预览和导出都不会被城市名遮住。
+- **更细的中国边界**：省级、地级和直辖市辖区边界使用本地 GeoJSON，按缩放显示，不依赖在线边界接口。
+- **中文路线描述**：支持“北京到西安坐高铁，再去成都”这类写法；文本定位优先使用本地城市库，找不到时才走在线 Nominatim。
+- **本地依赖**：MapLibre GL 与 MP4 muxer 已放入 `vendor/`，不依赖 CDN 加载核心脚本。
 
-## 🎬 Demo
+## 快速开始
 
-<p align="center">
-  <img src="assets/demo.gif" alt="TripTrail demo — a ferry follows real shipping lanes from Venice to Athens on a satellite map" width="720"/>
-</p>
-
-<p align="center">
-  <a href="https://github.com/Fangyuan025/triptrail/releases/download/v1.0.0/triptrail-demo-1080p60.mp4"><b>▶&nbsp;&nbsp;Watch the full demo video (original 1080p60)</b></a><br/>
-  A 17-stop round-the-world trip, rendered offline at constant 60 fps by the in-browser engine itself.
-</p>
-
-## ✨ Features
-
-|  | |
-|---|---|
-| 🎞️ **Rendered, not recorded** | Export steps a deterministic timeline frame-by-frame through WebCodecs (H.264 + AAC via mp4-muxer) at constant 30/60 fps — output smoothness never depends on how fast your machine renders |
-| 🗺️ **Build routes 3 ways** | Search cities, click the map, or type "Lisbon to Madrid by train, then Barcelona by car" (English & 中文) |
-| 🚄 **10 transport modes** | Plane, train, car, bus, boat, bike, walk, camper, motorcycle, tuk-tuk — hand-drawn vector icons; the plane banks along its smoothed heading |
-| 🌊 **Real sea lanes** | Boats follow the global shipping network (Eurostat SeaRoute + Dijkstra) — through the Strait of Hormuz, not across it |
-| 🛣️ **Real roads & rail corridors** | Cars/buses via OSRM; trains follow ground corridors up to 3 000 km |
-| ✈️ **True great circles** | Long flights curve toward the poles and cross the antimeridian correctly — Tokyo → LA flies the Pacific |
-| 🌍 **Globe & satellite** | MapLibre v5 globe projection with camera-accurate far-side occlusion; free Esri satellite imagery as the default style |
-| 🎥 **Cinematic camera** | Look-ahead tracking, gentle zoom/pitch arcs mid-leg, punch-in with a pulse ripple at every arrival, overview pullback finale |
-| 🎵 **Music, photos & titles** | A music track is decoded, looped/faded to length and muxed as AAC; polaroid photo pop-ups per stop; title card and lower-third captions |
-| 📂 **Import** | GPX / KML / GeoJSON with per-stop `mode` — try the bundled [`demo-journey.geojson`](demo-journey.geojson) |
-| 🎨 **7 map styles · 4 aspect ratios** | Satellite, Voyager, Eclipse, Dark Matter, Liberty, Fiord, Positron · 16:9, 9:16, 1:1, 4:5 · custom accent color · optional watermark (off by default) |
-| 📱 **Responsive** | Collapsible sidebar, mobile drawer layout, touch-friendly controls |
-
-## 🚀 Quick start
-
-**Online:** open the [live demo](https://travel-map-animator.vercel.app), press **▶ Preview**, then **⏺ Record video**.
-
-**Locally** — it's a static site, any server works:
+需要 Node.js 18+，无需安装任何 npm 依赖：
 
 ```bash
 git clone https://github.com/Fangyuan025/triptrail.git
 cd triptrail
-python3 -m http.server 8742
-# open http://localhost:8742
+npm start
 ```
 
-## 🧭 How it works
+然后打开 **http://127.0.0.1:8742**。
 
-1. **Plan** — stops are geocoded with Nominatim; each leg picks a routing engine by transport mode: OSRM for ground, a Dijkstra search over the SeaRoute marine network for boats, great-circle interpolation for long flights.
-2. **Timeline** — the whole story (camera, trail reveal, vehicle, heading, pulses, titles, photos) is a pure function of time, built as intro → approach → travel → arrival → photo → pullback phases.
-3. **Preview** — the timeline plays at wall-clock speed on the live map; the route trail is one GPU line source revealed by a `line-progress` gradient, so nothing re-tessellates per frame.
-4. **Export** — the camera first sweeps the route to warm the tile cache, then the timeline is stepped frame-by-frame: each frame waits for tiles, is composited to canvas, and encoded with `VideoEncoder`; music is rendered offline and muxed as AAC. The result is a constant-fps MP4 with no watermark. (WebM or missing WebCodecs falls back to realtime capture.)
+如果 8742 端口被占用：
 
-## 🙏 Free data & tools
+```powershell
+$env:PORT=8743; npm start
+```
 
-| What | Source |
+也可以直接用任意静态服务器托管本目录。不要用 `file://` 打开，地图与 JSON 数据需要 HTTP。
+
+## 使用说明
+
+1. 顶部“地图区域”选择 **中国模式** 或 **全球模式**。
+2. 在“途经点”里搜索城市、区县或景点，也可以直接点击地图落点。
+3. 在“路线生成”里输入整段行程，或导入 GPX / KML / GeoJSON。
+4. 在“外观”里切换高德路网、高德卫星、Esri 卫星等 9 种底图，调整比例、主题色和真实路线。
+5. 在“中国地图显示”里选择城市级别，控制省/市边界和分级城市。
+6. 点“预览”检查动画，点“录制视频”导出 MP4/WebM。
+
+> 录制 MP4 使用浏览器 WebCodecs，建议使用最新版 Chrome / Edge。录制时请保持页面可见。
+
+## 地图与数据
+
+| 内容 | 来源 |
 |---|---|
-| Map tiles | [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) · [OpenFreeMap](https://openfreemap.org) · [VersaTiles](https://versatiles.org) · [CARTO](https://carto.com) |
-| Geocoding | [Nominatim](https://nominatim.org) (OpenStreetMap) |
-| Road routing | [OSRM](https://project-osrm.org) demo server |
-| Shipping lanes | [Eurostat SeaRoute](https://github.com/eurostat/searoute) marine network |
-| Rendering | [MapLibre GL JS](https://maplibre.org) v5 |
-| Video muxing | [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) |
+| 中国省/市/区县边界 | [阿里云 DataV 行政区划](https://datav.aliyun.com/portal/school/atlas/area_selector)（本地简化后文件） |
+| 中国城市/区县坐标 | DataV 行政区划中心点 + [GeoNames](https://www.geonames.org/)（CC BY 4.0） |
+| 常见景点 | 本项目整理，仅用于地点搜索 |
+| 高德中文路网 / 卫星 | 高德地图公开栅格瓦片（版权归高德） |
+| Esri 卫星 | Esri World Imagery |
+| 全球矢量底图 | CARTO / OpenFreeMap / VersaTiles |
+| 在线地理编码 | Nominatim（OpenStreetMap） |
+| 公路/铁路走廊 | OSRM demo server |
+| 海运网络 | Eurostat SeaRoute |
 
-Map data © OpenStreetMap contributors. Satellite imagery © Esri, Maxar, Earthstar Geographics.
+底图瓦片、Nominatim 与 OSRM 都需要联网；本地城市搜索、中国边界和路线预览不依赖这些在线服务。
 
-## 📄 License
+### 坐标说明
 
-[MIT](LICENSE) © 2026 Fangyuan Lin
+DataV 与高德瓦片使用 GCJ-02 坐标体系，本项目的中国城市库与边界按此体系使用，因此在高德底图上对齐最好。切换到 Esri/WGS-84 卫星影像时，可能出现数百米级偏移，这是国内地图坐标体系的固有限制。用于导航或测绘前请自行做坐标纠偏。
+
+### 使用条款
+
+高德、Esri、CARTO、OpenFreeMap 等瓦片均有各自的服务条款。本项目仅用于个人学习与演示；商用或公开部署前，请确认相应地图服务的授权要求。
+
+## 目录结构
+
+```
+index.html                  界面
+i18n.js                     中英文文案
+app.js                      地图、路线、搜索、动画、导出
+style.css                   界面样式
+server.mjs                  零依赖本地静态服务器
+data/china-cities.json      3,200 个城市/区县 + 137 个景点
+data/china-provinces.geojson
+data/china-prefectures.geojson
+data/china-districts.geojson
+vendor/maplibre/            本地 MapLibre GL
+vendor/mp4-muxer.mjs        本地 MP4 muxer
+```
+
+## 开发与数据重建
+
+运行 `node scripts/fetch-assets.mjs` 可重新下载原始 DataV/GeoNames 数据；`scripts/build-china-data.mjs` 会生成运行时的简化边界和城市索引。重建脚本需要：
+
+```bash
+npm install --prefix scripts pinyin-pro
+node scripts/fetch-assets.mjs
+node scripts/build-china-data.mjs
+```
+
+## 许可证
+
+MIT。原始项目版权归 Fangyuan Lin 所有，详见 [LICENSE](LICENSE)。
+
+地图数据版权归各自来源所有。

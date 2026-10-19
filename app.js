@@ -4,6 +4,33 @@
 
 'use strict';
 
+/* ----------------------------- i18n -----------------------------
+   Every visible string lives here. `data-i18n*` attributes translate the
+   static shell; runtime messages go through t(). The default is Chinese
+   because this build targets Chinese users, but the top-right button
+   switches the whole interface to English instantly. */
+const I18N = window.TRIPTRAIL_I18N;
+
+const PREFS = (() => {
+  try { return JSON.parse(localStorage.getItem('triptrail.prefs') || '{}') || {}; } catch { return {}; }
+})();
+let LANG = PREFS.lang === 'en' ? 'en' : 'zh';
+
+function t(key, vars) {
+  const dict = I18N[LANG] || I18N.zh;
+  let out = dict[key] ?? I18N.zh[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) out = out.replaceAll(`{${k}}`, String(v));
+  return out;
+}
+function savePrefs() {
+  try {
+    localStorage.setItem('triptrail.prefs', JSON.stringify({
+      lang: LANG, region: settings.region, style: settings.style,
+      cityLevel: settings.cityLevel, cities: settings.cities, borders: settings.borders,
+    }));
+  } catch { /* private mode */ }
+}
+
 /* ----------------------------- Vector icons -----------------------------
    All glyphs are hand-drawn 24×24 stroke/fill primitives (no emoji anywhere).
    Same source is used for sidebar buttons (inline SVG) and the canvas
@@ -54,17 +81,21 @@ function preloadIcons(names, color) {
    use it too, just with a longer range), 'sea' follows real shipping lanes,
    'air' always flies a great circle / arc. */
 const MODES = {
-  plane:      { label: 'Plane',        dashed: true,  route: 'air',                bend: 0.18, directional: true },
-  car:        { label: 'Car',          dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
-  train:      { label: 'Train',        dashed: true,  route: 'osrm', maxKm: 3000,  bend: 0.05 },
-  bus:        { label: 'Bus',          dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
-  boat:       { label: 'Boat / Ferry', dashed: true,  route: 'sea',                bend: 0.14 },
-  bike:       { label: 'Bike',         dashed: false, route: 'osrm', maxKm: 800,   bend: 0.05 },
-  walk:       { label: 'Walk',         dashed: false, route: 'osrm', maxKm: 300,   bend: 0.04 },
-  camper:     { label: 'Camper',       dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
-  motorcycle: { label: 'Motorcycle',   dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
-  tuktuk:     { label: 'Tuk-tuk',      dashed: false, route: 'osrm', maxKm: 500,   bend: 0.07 },
+  plane:      { label: 'Plane',        labelZh: '飞机',   dashed: true,  route: 'air',                bend: 0.18, directional: true },
+  car:        { label: 'Car',          labelZh: '汽车',   dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
+  train:      { label: 'Train',        labelZh: '火车 / 高铁', dashed: true, route: 'osrm', maxKm: 3000,  bend: 0.05 },
+  bus:        { label: 'Bus',          labelZh: '大巴',   dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
+  boat:       { label: 'Boat / Ferry', labelZh: '轮船 / 轮渡', dashed: true, route: 'sea',          bend: 0.14 },
+  bike:       { label: 'Bike',         labelZh: '自行车', dashed: false, route: 'osrm', maxKm: 800,   bend: 0.05 },
+  walk:       { label: 'Walk',         labelZh: '步行',   dashed: false, route: 'osrm', maxKm: 300,   bend: 0.04 },
+  camper:     { label: 'Camper',       labelZh: '房车',   dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
+  motorcycle: { label: 'Motorcycle',   labelZh: '摩托车', dashed: false, route: 'osrm', maxKm: 1500,  bend: 0.07 },
+  tuktuk:     { label: 'Tuk-tuk',      labelZh: '嘟嘟车', dashed: false, route: 'osrm', maxKm: 500,   bend: 0.07 },
 };
+function modeLabel(key) {
+  const m = MODES[key];
+  return m ? (LANG === 'zh' ? (m.labelZh || m.label) : m.label) : key;
+}
 const MODE_ALIASES = {
   plane: 'plane', flight: 'plane', fly: 'plane', airplane: 'plane', 飞机: 'plane',
   car: 'car', drive: 'car', driving: 'car', 汽车: 'car', 自驾: 'car',
@@ -80,26 +111,36 @@ const MODE_ALIASES = {
 
 /* ----------------------------- Demo journey ----------------------------- */
 let stops = [
-  { id: id(), name: 'Lisbon',    lng: -9.1393, lat: 38.7223, mode: 'plane' },
-  { id: id(), name: 'Madrid',    lng: -3.7038, lat: 40.4168, mode: 'train' },
-  { id: id(), name: 'Barcelona', lng:  2.1734, lat: 41.3851, mode: 'train' },
-  { id: id(), name: 'Marseille', lng:  5.3698, lat: 43.2965, mode: 'car'   },
-  { id: id(), name: 'Rome',      lng: 12.4964, lat: 41.9028, mode: 'plane' },
+  { id: id(), name: '北京', nameZh: '北京', nameEn: 'Beijing', lng: 116.405285, lat: 39.904989, mode: 'train' },
+  { id: id(), name: '西安', nameZh: '西安', nameEn: "Xi'an", lng: 108.948024, lat: 34.263161, mode: 'train' },
+  { id: id(), name: '成都', nameZh: '成都', nameEn: 'Chengdu', lng: 104.065735, lat: 30.659462, mode: 'train' },
+  { id: id(), name: '重庆', nameZh: '重庆', nameEn: 'Chongqing', lng: 106.504962, lat: 29.533155, mode: 'train' },
+  { id: id(), name: '上海', nameZh: '上海', nameEn: 'Shanghai', lng: 121.472644, lat: 31.231706, mode: 'plane' },
 ];
+
+function stopLabel(s) {
+  if (!s) return '';
+  if (LANG === 'en') return s.nameEn || s.name;
+  return s.nameZh || s.name;
+}
 
 /* ----------------------------- Settings ----------------------------- */
 const settings = {
-  style: 'satellite',
+  region: PREFS.region === 'global' ? 'global' : 'cn',
+  style: PREFS.style || 'amap',
   aspect: '16:9',
   accent: '#ff5a3c',
   globe: false,
   pitch: false,
   labels: true,
+  cities: PREFS.cities !== false,
+  borders: PREFS.borders !== false,
+  cityLevel: PREFS.cityLevel || 'auto',
   roads: true,
   glow: true,
   pace: 1,
-  title: 'My European Adventure',
-  subtitle: 'Spring 2026 · 5 cities',
+  title: t('defaultTitle'),
+  subtitle: t('defaultSubtitle'),
   watermark: '',
   format: 'mp4',      // mp4 | webm
   quality: 1,         // 1 | 2 (render pixel-ratio multiplier)
@@ -128,6 +169,14 @@ let map, mediaRecorder, recordedChunks = [], cancelToken = 0;
 let photoTargetId = null;
 let basePixelRatio = window.devicePixelRatio || 1;
 
+/* China data: 3k+ offline places + simplified boundaries. */
+const chinaData = { cities: [], pois: [], index: [], ready: false, failed: false };
+const boundaryCache = {};
+let placeRaf = 0;
+let musicFileName = '';
+let lastVideo = null;
+const CHINA_BOUNDS = [[73, 3], [136, 54]];
+
 /* ============================================================ helpers */
 function id() { return Math.random().toString(36).slice(2, 9); }
 function $(s) { return document.querySelector(s); }
@@ -154,7 +203,7 @@ function toast(msg, ms = 2600) {
   const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden');
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add('hidden'), ms);
 }
-function loading(on, text = 'Working…') {
+function loading(on, text = t('working')) {
   $('#loading-text').textContent = text;
   $('#loading').classList.toggle('hidden', !on);
 }
@@ -369,8 +418,7 @@ function line(coords) { return { type: 'Feature', geometry: { type: 'LineString'
 const EMPTY = { type: 'FeatureCollection', features: [] };
 
 /* ============================================================ map setup */
-// Free satellite imagery (Esri World Imagery) as a self-contained style spec,
-// with glyphs so our (compositor) labels aren't needed on the GL side.
+// Free satellite imagery (Esri World Imagery) as a self-contained style spec.
 const SATELLITE_STYLE = {
   version: 8,
   glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
@@ -387,8 +435,47 @@ const SATELLITE_STYLE = {
     { id: 'satellite', type: 'raster', source: 'satellite', paint: { 'raster-fade-duration': 0 } },
   ],
 };
+
+// Chinese-language raster basemaps. AMap's public raster endpoints give much
+// better domestic city/road coverage (and Chinese labels) than the global
+// styles. All four subdomains are listed because MapLibre has no {s} token.
+const amapTiles = (kind) => (kind === 'satellite'
+  ? [1, 2, 3, 4].map(n => `https://webst0${n}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}`)
+  // ltype=3 = land + road network WITHOUT text labels. Our canvas city layer
+  // then owns every label, which avoids doubled names and makes the selected
+  // city tier genuinely authoritative.
+  : [1, 2, 3, 4].map(n => `https://wprd0${n}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=7&x={x}&y={y}&z={z}&ltype=3`));
+function amapStyle(kind) {
+  return {
+    version: 8,
+    sources: {
+      amap: {
+        type: 'raster',
+        tiles: amapTiles(kind),
+        tileSize: 256,
+        minzoom: 3,
+        maxzoom: 18,
+        attribution: kind === 'satellite' ? '影像 © 高德地图 / AMap' : '地图 © 高德地图 / AMap',
+      },
+    },
+    layers: [
+      { id: 'bg', type: 'background', paint: { 'background-color': '#dfe8ef' } },
+      { id: 'amap', type: 'raster', source: 'amap', paint: { 'raster-fade-duration': 0 } },
+    ],
+  };
+}
+const AMAP_ROAD_STYLE = amapStyle('road');
+const AMAP_SAT_STYLE = amapStyle('satellite');
+const CHINA_STYLE_IDS = new Set(['amap', 'amap-satellite']);
+const isChinaStyle = value => CHINA_STYLE_IDS.has(value);
+
 // Resolve a style menu value to a URL or an inline spec.
-function styleSpec(value) { return value === 'satellite' ? SATELLITE_STYLE : value; }
+function styleSpec(value) {
+  if (value === 'satellite') return SATELLITE_STYLE;
+  if (value === 'amap') return AMAP_ROAD_STYLE;
+  if (value === 'amap-satellite') return AMAP_SAT_STYLE;
+  return value;
+}
 
 function initMap() {
   const initial = styleSpec(settings.style);
@@ -399,22 +486,31 @@ function initMap() {
     // fire `load` in this build, so start from a trivial style that always
     // loads and swap to the real one below.
     style: inline ? { version: 8, sources: {}, layers: [] } : initial,
-    center: [5, 44],
-    zoom: 4,
+    center: settings.region === 'cn' ? [104.2, 35.6] : [5, 44],
+    zoom: settings.region === 'cn' ? 4.05 : 4,
     pitch: settings.pitch ? 50 : 0,
     preserveDrawingBuffer: true,   // needed so recording can drawImage the map
     attributionControl: { compact: true },
     maxTileCacheSize: 4096,   // keep prewarmed route tiles in memory
+    maxBounds: settings.region === 'cn' ? CHINA_BOUNDS : undefined,
+    minZoom: settings.region === 'cn' ? 2.8 : 0,
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   // style.load fires for every style (initial + each switch) — always (re)add
   // our layers; if the style reports "not done loading", retry on styledata.
   const ensureLayers = () => {
-    try { applyProjection(); addLayers(); refreshRoutePreview(); }
-    catch (e) { map.once('styledata', ensureLayers); }
+    try {
+      applyProjection();
+      addLayers();
+      refreshRoutePreview();
+      ensureChinaOverlay();
+      schedulePlaceLayer();
+    } catch (e) { map.once('styledata', ensureLayers); }
   };
-  map.on('style.load', () => { ensureLayers(); fitToStops(true); });
-  map.on('click', (e) => addStopAt(e.lngLat.lng, e.lngLat.lat));
+  map.on('style.load', () => { ensureLayers(); if (stops.length) fitToStops(true); });
+  map.on('click', (e) => { if (!anim.playing) addStopAt(e.lngLat.lng, e.lngLat.lat); });
+  map.on('render', () => { if (!anim.playing) schedulePlaceLayer(); });
+  map.on('resize', schedulePlaceLayer);
   // diff:false forces a full (re)load so style.load fires and our layers re-add
   if (inline) map.once('load', () => map.setStyle(initial, { diff: false }));
 }
@@ -484,8 +580,70 @@ function addLayers() {
     paint: { 'line-color': a, 'line-opacity': 1, 'line-width': 4.2 } });
 
   applySky();
+  ensureChinaOverlay();
 }
 
+/* ---------------------- Simplified China boundary overlay ---------------------- */
+async function loadBoundary(key, url) {
+  if (!boundaryCache[key]) {
+    boundaryCache[key] = fetch(url)
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+      .catch(e => { console.warn(`boundary ${key} failed:`, e); return EMPTY; });
+  }
+  return boundaryCache[key];
+}
+
+let boundaryBusy = false;
+async function ensureChinaOverlay() {
+  if (!map || settings.region !== 'cn' || boundaryBusy) {
+    setBoundaryVisibility();
+    return;
+  }
+  boundaryBusy = true;
+  try {
+    const [province, prefecture, district] = await Promise.all([
+      loadBoundary('provinces', 'data/china-provinces.geojson'),
+      loadBoundary('prefectures', 'data/china-prefectures.geojson'),
+      loadBoundary('districts', 'data/china-districts.geojson'),
+    ]);
+    if (!map || !map.getStyle()) return;
+    const addSrc = (id, data) => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data }); };
+    addSrc('china-provinces', province);
+    addSrc('china-prefectures', prefecture);
+    addSrc('china-districts', district);
+    const before = map.getLayer('route-bg') ? 'route-bg' : undefined;
+    const ensure = (def) => { if (!map.getLayer(def.id)) map.addLayer(def, before); };
+    ensure({ id: 'china-fill', type: 'fill', source: 'china-provinces',
+      paint: { 'fill-color': '#2f6f9f', 'fill-opacity': 0.025 } });
+    ensure({ id: 'china-province-line', type: 'line', source: 'china-provinces',
+      paint: {
+        'line-color': '#2f6f9f', 'line-opacity': 0.62,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.8, 5, 1.3, 8, 2.1],
+      } });
+    ensure({ id: 'china-prefecture-line', type: 'line', source: 'china-prefectures', minzoom: 5.3,
+      paint: {
+        'line-color': '#4d7f9e', 'line-opacity': 0.36,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 5.3, 0.4, 8, 0.9, 12, 1.4],
+      } });
+    ensure({ id: 'china-district-line', type: 'line', source: 'china-districts', minzoom: 8.5,
+      paint: { 'line-color': '#f4f7fa', 'line-opacity': 0.32, 'line-width': 0.65 } });
+  } finally {
+    boundaryBusy = false;
+    setBoundaryVisibility();
+  }
+}
+
+function setBoundaryVisibility() {
+  if (!map || !map.getLayer) return;
+  const visible = settings.region === 'cn' && settings.borders;
+  for (const id of ['china-fill', 'china-province-line', 'china-prefecture-line', 'china-district-line']) {
+    try { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none'); }
+    catch { /* style switching */ }
+  }
+}
+
+// Border lines must sit below the animated route; MapLibre's beforeId keeps
+// that order even when the user changes basemaps.
 function setSrc(sid, data) { const s = map.getSource(sid); if (s) s.setData(data); }
 
 // Reveal the trail up to `progress` (0..1 of total length) via a gradient step.
@@ -535,6 +693,126 @@ function fitToStops(instant) {
   map.fitBounds(b, { padding: fitPadding(90), duration: instant ? 0 : 700, pitch: settings.pitch ? 50 : 0 });
 }
 
+/* ============================================================ map labels
+   City labels are painted with Canvas 2D instead of MapLibre symbol layers:
+   system CJK fonts are always available (no huge glyph PBF download), and
+   the same routine can be replayed inside the export canvas. Waypoints are
+   drawn after the city layer, so they can never be hidden by a label. */
+function cityMinZoom(c) {
+  if (settings.cityLevel === 'auto') {
+    if (c.level === 1) return 3.0;
+    if (c.level === 2) return c.pop > 4_000_000 ? 4.35 : c.pop > 1_500_000 ? 4.9 : 5.5;
+    return 8.1;
+  }
+  const maxLevel = Number(settings.cityLevel) || 3;
+  if (c.level > maxLevel) return Infinity;
+  return c.level === 1 ? 2.8 : c.level === 2 ? 4.4 : 7.0;
+}
+
+function drawCityLabels(ctx, W, H, dpr) {
+  if (settings.region !== 'cn' || !settings.cities || !chinaData.ready) return;
+  const zoom = map.getZoom();
+  const view = map.getBounds();
+  const candidates = chinaData.cities
+    .filter(c => c.lng >= 72 && c.lng <= 137 && c.lat >= 2 && c.lat <= 55)
+    .filter(c => view.contains([c.lng, c.lat]))
+    .filter(c => zoom >= cityMinZoom(c))
+    .sort((a, b) => a.level - b.level || (b.pop || 0) - (a.pop || 0));
+  const placed = [];
+  let count = 0;
+  for (const c of candidates) {
+    if (count >= 110) break;
+    if (occludedByGlobe(c.lng, c.lat)) continue;
+    const [x, y] = project(c.lng, c.lat, dpr);
+    if (x < -80 || x > W + 80 || y < -30 || y > H + 30) continue;
+    const tier = c.level === 1 ? 1 : c.level === 2 ? 2 : 3;
+    const fs = (tier === 1 ? 13 : tier === 2 ? 12 : 10.5) * dpr;
+    const weight = tier === 1 ? 700 : tier === 2 ? 600 : 500;
+    const font = `${weight} ${fs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
+    ctx.font = font;
+    const name = LANG === 'en' ? (c.en || c.name) : c.name;
+    const tw = ctx.measureText(name).width;
+    const right = x < W - tw - 28 * dpr;
+    const lx = right ? x + 9 * dpr : x - 9 * dpr - tw;
+    const box = { x: lx - 4 * dpr, y: y - fs * 0.72, w: tw + 8 * dpr, h: fs * 1.44 };
+    if (placed.some(b => box.x < b.x + b.w && box.x + box.w > b.x && box.y < b.y + b.h && box.y + box.h > b.y)) continue;
+    placed.push(box);
+    // dot
+    ctx.beginPath();
+    ctx.arc(x, y, (tier === 1 ? 3.1 : 2.2) * dpr, 0, Math.PI * 2);
+    ctx.fillStyle = tier === 1 ? settings.accent : 'rgba(245,249,252,.92)';
+    ctx.fill();
+    if (tier === 1) {
+      ctx.beginPath();
+      ctx.arc(x, y, 6 * dpr, 0, Math.PI * 2);
+      ctx.strokeStyle = hexA(settings.accent, 0.55);
+      ctx.lineWidth = 1.2 * dpr;
+      ctx.stroke();
+    }
+    // text with a dark halo for legibility on both AMap and satellite
+    ctx.font = font;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.lineWidth = 3.2 * dpr;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(5,10,16,.88)';
+    ctx.strokeText(name, lx, y + 0.5 * dpr);
+    ctx.fillStyle = tier === 1 ? '#ffffff' : tier === 2 ? '#eaf0f6' : '#d6e0e9';
+    ctx.fillText(name, lx, y + 0.5 * dpr);
+    count++;
+  }
+}
+
+function drawWaypoints(ctx, W, H, dpr) {
+  stops.forEach((st, i) => {
+    if (occludedByGlobe(st.lng, st.lat)) return;
+    const [x, y] = project(st.lng, st.lat, dpr);
+    if (x < -50 || x > W + 50 || y < -50 || y > H + 50) return;
+    ctx.beginPath(); ctx.arc(x, y, 7 * dpr, 0, Math.PI * 2);
+    ctx.fillStyle = settings.accent;
+    ctx.fill();
+    ctx.lineWidth = 2.5 * dpr; ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, 12 * dpr, 0, Math.PI * 2);
+    ctx.strokeStyle = hexA(settings.accent, 0.45); ctx.lineWidth = 2 * dpr; ctx.stroke();
+    if (settings.labels) {
+      const label = stopLabel(st);
+      const fs = 15 * dpr;
+      ctx.font = `700 ${fs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
+      const tw = ctx.measureText(label).width;
+      const px = 9 * dpr, py = 6 * dpr, lx = x + 13 * dpr, ly = y - fs - 4 * dpr;
+      roundRect(ctx, lx, ly, tw + px * 2, fs + py * 2, 7 * dpr);
+      ctx.fillStyle = 'rgba(12,16,21,.86)'; ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      ctx.fillText(label, lx + px, ly + (fs + py * 2) / 2);
+    }
+  });
+}
+
+function drawMapLabels(ctx, W, H, dpr) {
+  drawCityLabels(ctx, W, H, dpr);
+  drawWaypoints(ctx, W, H, dpr);
+}
+
+function schedulePlaceLayer() {
+  if (!map || anim.playing || placeRaf) return;
+  placeRaf = requestAnimationFrame(() => { placeRaf = 0; drawPlaceLayer(); });
+}
+
+function drawPlaceLayer() {
+  const canvas = $('#place-layer');
+  if (!canvas || !map) return;
+  const m = map.getCanvas();
+  if (!m || !m.width || !m.height) return;
+  if (canvas.width !== m.width || canvas.height !== m.height) {
+    canvas.width = m.width;
+    canvas.height = m.height;
+  }
+  const ctx = canvas.getContext('2d');
+  const dpr = m.width / m.clientWidth || 1;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawMapLabels(ctx, canvas.width, canvas.height, dpr);
+}
+
 /* ============================================================ stops UI */
 function esc(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -548,20 +826,20 @@ function renderStops() {
     li.dataset.id = s.id;
     const legSelect = i === 0 ? '' : `
       <div class="leg">
-        <span>via</span>
+        <span>${esc(t('via'))}</span>
         <select data-mode="${s.id}">
-          ${Object.entries(MODES).map(([k, m]) => `<option value="${k}" ${s.mode === k ? 'selected' : ''}>${m.label}</option>`).join('')}
+          ${Object.keys(MODES).map(k => `<option value="${k}" ${s.mode === k ? 'selected' : ''}>${esc(modeLabel(k))}</option>`).join('')}
         </select>
       </div>`;
     li.innerHTML = `
       <div class="top">
-        <div class="idx" title="Drag to reorder">${i + 1}</div>
-        ${s.photoUrl ? `<img class="thumb" src="${esc(s.photoUrl)}" alt="" />` : ''}
-        <div class="name" data-rename="${s.id}" title="Click to rename">${esc(s.name)}</div>
-        <button class="mini ${s.photoUrl ? 'on' : ''}" data-photo="${s.id}" title="Attach photo">${svgIcon('camera')}</button>
-        <button class="mini" data-up="${s.id}" title="Move up">${svgIcon('up')}</button>
-        <button class="mini" data-down="${s.id}" title="Move down">${svgIcon('down')}</button>
-        <button class="mini" data-del="${s.id}" title="Remove">${svgIcon('x')}</button>
+        <div class="idx" title="${esc(t('tipDrag'))}">${i + 1}</div>
+        ${s.photoUrl ? `<img class="thumb" src="${esc(s.photoUrl)}" alt="${esc(t('photoAlt'))}" />` : ''}
+        <div class="name" data-rename="${s.id}" title="${esc(t('tipRename'))}">${esc(stopLabel(s))}</div>
+        <button class="mini ${s.photoUrl ? 'on' : ''}" data-photo="${s.id}" title="${esc(t('tipPhoto'))}">${svgIcon('camera')}</button>
+        <button class="mini" data-up="${s.id}" title="${esc(t('tipUp'))}">${svgIcon('up')}</button>
+        <button class="mini" data-down="${s.id}" title="${esc(t('tipDown'))}">${svgIcon('down')}</button>
+        <button class="mini" data-del="${s.id}" title="${esc(t('tipRemove'))}">${svgIcon('x')}</button>
       </div>${legSelect}`;
     ol.appendChild(li);
   });
@@ -571,7 +849,7 @@ function renderStops() {
   ol.querySelectorAll('[data-up]').forEach(b => b.onclick = () => move(b.dataset.up, -1));
   ol.querySelectorAll('[data-down]').forEach(b => b.onclick = () => move(b.dataset.down, 1));
   ol.querySelectorAll('[data-mode]').forEach(sel => sel.onchange = () => {
-    const s = stops.find(x => x.id === sel.dataset.mode); if (s) { s.mode = sel.value; refreshRoutePreview(); }
+    const s = stops.find(x => x.id === sel.dataset.mode); if (s) { s.mode = sel.value; refreshRoutePreview(); schedulePlaceLayer(); }
   });
   ol.querySelectorAll('[data-photo]').forEach(b => b.onclick = () => {
     photoTargetId = b.dataset.photo;
@@ -602,6 +880,7 @@ function renderStops() {
     if (before == null) ol.appendChild(dragging);
     else if (before !== dragging) ol.insertBefore(dragging, before);
   };
+  schedulePlaceLayer();
 }
 
 // first stop whose midpoint is below the pointer — the drop lands above it
@@ -632,7 +911,7 @@ function startRename(sid, nameEl) {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'name-edit';
-  input.value = s.name;
+  input.value = stopLabel(s);
   nameEl.replaceWith(input);
   input.focus(); input.select();
   let closed = false;
@@ -640,7 +919,11 @@ function startRename(sid, nameEl) {
     if (closed) return;
     closed = true;
     const v = input.value.trim();
-    if (save && v) s.name = v;
+    if (save && v) {
+      s.name = v;
+      delete s.nameZh;
+      delete s.nameEn;
+    }
     renderStops();
   };
   input.onblur = () => close(true);
@@ -655,94 +938,359 @@ function move(sid, dir) {
   [stops[i], stops[j]] = [stops[j], stops[i]];
   afterStopsChange();
 }
-function afterStopsChange() { renderStops(); refreshRoutePreview(); fitToStops(false); }
+function afterStopsChange() {
+  renderStops();
+  refreshRoutePreview();
+  fitToStops(false);
+  schedulePlaceLayer();
+}
 
-function addStopAt(lng, lat, name, mode) {
-  const s = { id: id(), name: name || `${lat.toFixed(3)}, ${lng.toFixed(3)}`, lng, lat, mode: mode || 'plane' };
+function addStopAt(lng, lat, name, mode, extra = {}) {
+  const s = {
+    id: id(),
+    name: name || `${lat.toFixed(3)}, ${lng.toFixed(3)}`,
+    lng, lat, mode: mode || 'plane',
+  };
+  if (extra.nameZh) s.nameZh = extra.nameZh;
+  if (extra.nameEn) s.nameEn = extra.nameEn;
+  if (extra.province) s.province = extra.province;
+  if (extra.pinyin) s.pinyin = extra.pinyin;
   stops.push(s);
   afterStopsChange();
   if (!name) reverseName(s);
   return s;
 }
 async function reverseName(s) {
+  // The offline index gives an instant Chinese name even when Nominatim is
+  // unreachable (common on domestic networks).
+  const near = nearestLocalPlace(s.lng, s.lat, 80);
+  if (near) {
+    s.nameZh = near.name;
+    s.nameEn = near.en || s.name;
+    s.name = LANG === 'en' ? s.nameEn : s.nameZh;
+    s.province = near.province || '';
+    renderStops();
+    schedulePlaceLayer();
+    return;
+  }
   try {
-    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${s.lat}&lon=${s.lng}`, { headers: { 'Accept-Language': 'en' } });
+    const lang = LANG === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.5' : 'en';
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${s.lat}&lon=${s.lng}&accept-language=${encodeURIComponent(lang)}`);
     const j = await r.json();
     const a = j.address || {};
-    s.name = a.city || a.town || a.village || a.county || a.state || j.name || s.name;
-    renderStops();
+    const nm = a.city || a.town || a.village || a.county || a.state || j.name;
+    if (nm) {
+      s.name = nm;
+      renderStops();
+      schedulePlaceLayer();
+    }
   } catch (e) { /* keep coords as name */ }
 }
 
-/* ---- search / geocode ---- */
-async function geocodeOne(q) {
-  const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`, { headers: { 'Accept-Language': 'en' } });
-  const j = await r.json();
-  return j[0];
+/* ---- offline China place index + online fallback ---- */
+function normalizeQuery(s) {
+  return String(s || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s·•,，.。'’"“”\-_/\\()（）]+/g, '');
 }
 
-async function doSearch() {
+function placeScore(p, q) {
+  const nq = normalizeQuery(q);
+  if (!nq) return 0;
+  const latin = /^[a-z0-9]+$/i.test(nq);
+  const names = [p.name, p.fullName, p.en, p.pinyin, p.province, p.provinceEn, ...(p.aliases || [])]
+    .filter(Boolean).map(normalizeQuery);
+  names.push(normalizeQuery(`${p.province || ''}${p.name || ''}`));
+  names.push(normalizeQuery(`${p.name || ''}${p.city || ''}`));
+  let score = 0;
+  for (const n of names) {
+    if (!n) continue;
+    if (n === nq) score = Math.max(score, 120);
+    else if (n.startsWith(nq)) score = Math.max(score, 88 - Math.min(20, n.length - nq.length));
+    // Pinyin/English substrings are too eager (changzhou contains hangzhou);
+    // for Latin queries require a prefix, while Chinese names keep substring
+    // matching so "西湖" can find "瘦西湖".
+    else if (!latin && n.includes(nq)) score = Math.max(score, 58 - Math.min(20, n.length - nq.length));
+  }
+  // Chinese queries often concatenate a city and a landmark ("杭州西湖").
+  if (!latin && score < 80 && q.length >= 2) {
+    if (names.some(n => nq.endsWith(n) || n.endsWith(nq))) score = Math.max(score, 45);
+  }
+  return score;
+}
+
+function localSearch(q, limit = 8) {
+  if (!chinaData.ready) return [];
+  const scored = [];
+  for (const p of chinaData.index) {
+    const score = placeScore(p, q);
+    if (score > 0) scored.push({ ...p, score });
+  }
+  scored.sort((a, b) => b.score - a.score
+    || (a.kind === 'poi' ? 1 : 0) - (b.kind === 'poi' ? 1 : 0)
+    || (a.level || 9) - (b.level || 9)
+    || (b.pop || 0) - (a.pop || 0));
+  return scored.slice(0, limit);
+}
+
+function nearestLocalPlace(lng, lat, maxKm = 80) {
+  if (!chinaData.ready) return null;
+  let best = null, bd = maxKm;
+  for (const p of chinaData.cities) {
+    const d = haversine([lng, lat], [p.lng, p.lat]);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+
+async function loadChinaData() {
+  try {
+    const r = await fetch('data/china-cities.json');
+    if (!r.ok) throw new Error(String(r.status));
+    const j = await r.json();
+    chinaData.cities = Array.isArray(j.cities) ? j.cities : [];
+    chinaData.pois = Array.isArray(j.pois) ? j.pois : [];
+    chinaData.index = [
+      ...chinaData.cities.map(p => ({ ...p, city: p.province })),
+      ...chinaData.pois,
+    ];
+    chinaData.ready = true;
+    schedulePlaceLayer();
+  } catch (e) {
+    chinaData.failed = true;
+    console.warn('China place index unavailable:', e);
+    toast(t('dataUnavailable'), 3600);
+  }
+}
+
+function resultTypeLabel(p) {
+  if (p.kind === 'poi') return t('typePoi');
+  if (p.kind === 'district') return t('typeDistrict');
+  if (p.level === 1) return t('typeCapital');
+  if (p.kind === 'city') return t('typeCity');
+  return t('typeOnline');
+}
+
+function resultName(p) {
+  if (LANG === 'en') return p.nameEn || p.en || p.name;
+  return p.nameZh || p.name;
+}
+
+function resultSub(p) {
+  if (p.kind === 'online') return p.address || p.displayName || '';
+  const bits = [];
+  const province = LANG === 'en' ? (p.provinceEn || p.province) : p.province;
+  if (province && normalizeQuery(province) !== normalizeQuery(resultName(p))) bits.push(province);
+  if (p.kind === 'district') {
+    const parent = (p.aliases || []).find(a => a && a !== p.province);
+    if (parent) bits.push(parent);
+  }
+  if (!bits.length) bits.push(LANG === 'en' ? 'China' : '中国');
+  return [...new Set(bits.filter(Boolean))].join(' · ');
+}
+
+function currentSearchResults() {
+  return Array.isArray(window._ttSearchItems) ? window._ttSearchItems : [];
+}
+
+function renderSearchResults(items, state) {
+  const box = $('#search-results');
+  window._ttSearchItems = items || [];
+  window._ttSearchActive = -1;
+  box.innerHTML = '';
+  if (state && !items.length) {
+    const s = document.createElement('div');
+    s.className = 'search-state';
+    s.textContent = state;
+    box.appendChild(s);
+  }
+  (items || []).forEach((p, idx) => {
+    const row = document.createElement('div');
+    row.className = 'result';
+    row.tabIndex = 0;
+    row.dataset.index = String(idx);
+    const main = document.createElement('div');
+    main.className = 'result-main';
+    const nm = document.createElement('div');
+    nm.className = 'result-name';
+    nm.textContent = resultName(p);
+    const sub = document.createElement('div');
+    sub.className = 'result-sub';
+    sub.textContent = resultSub(p);
+    main.append(nm, sub);
+    const tag = document.createElement('span');
+    tag.className = 'result-type ' + (p.kind || 'online');
+    tag.textContent = resultTypeLabel(p);
+    row.append(main, tag);
+    row.onclick = () => chooseSearchResult(p);
+    row.onkeydown = e => { if (e.key === 'Enter') chooseSearchResult(p); };
+    box.appendChild(row);
+  });
+  if (state && items.length) {
+    const s = document.createElement('div');
+    s.className = 'search-state';
+    s.textContent = state;
+    box.appendChild(s);
+  }
+  box.classList.remove('hidden');
+}
+
+function chooseSearchResult(p) {
+  searchSeq++;
+  $('#search-results').classList.add('hidden');
+  $('#inp-search').value = '';
+  const display = LANG === 'en' ? (p.nameEn || p.en || p.name) : (p.nameZh || p.name);
+  addStopAt(p.lng, p.lat, display, 'plane', {
+    nameZh: p.nameZh || (p.kind !== 'online' ? p.name : ''),
+    nameEn: p.nameEn || p.en || '',
+    province: p.province || '',
+    pinyin: p.pinyin || '',
+  });
+}
+
+function moveSearchActive(delta) {
+  const rows = [...$('#search-results').querySelectorAll('.result')];
+  if (!rows.length) return;
+  let i = (window._ttSearchActive ?? -1) + delta;
+  if (i < 0) i = rows.length - 1;
+  if (i >= rows.length) i = 0;
+  window._ttSearchActive = i;
+  rows.forEach((r, k) => r.classList.toggle('active', k === i));
+  rows[i].scrollIntoView({ block: 'nearest' });
+}
+
+async function nominatimSearch(q, limit = 6) {
+  const params = new URLSearchParams({
+    format: 'jsonv2', limit: String(limit), addressdetails: '1',
+    'accept-language': LANG === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.5' : 'en',
+  });
+  if (settings.region === 'cn') params.set('countrycodes', 'cn');
+  params.set('q', q);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 7000);
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, { signal: ctrl.signal });
+    if (!r.ok) throw new Error(String(r.status));
+    const list = await r.json();
+    return list.map(p => ({
+      name: (p.name || (p.display_name || '').split(',')[0] || q).trim(),
+      nameZh: (p.namedetails && p.namedetails['name:zh']) || p.name || '',
+      nameEn: p.name || '',
+      lng: parseFloat(p.lon), lat: parseFloat(p.lat),
+      kind: 'online', address: p.display_name || '',
+      level: 9, pop: p.importance || 0,
+    })).filter(p => Number.isFinite(p.lng) && Number.isFinite(p.lat));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let searchSeq = 0;
+async function doSearch(forceOnline = false) {
   const q = $('#inp-search').value.trim();
   if (!q) return;
-  loading(true, 'Searching…');
+  const seq = ++searchSeq;
+  const local = localSearch(q, 8);
+  const shouldOnline = forceOnline || settings.region !== 'cn' || local.length === 0;
+  if (!shouldOnline) {
+    renderSearchResults(local, '');
+    return;
+  }
+  renderSearchResults(local, t('searchOnline'));
   try {
-    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`, { headers: { 'Accept-Language': 'en' } });
-    const list = await r.json();
-    loading(false);
-    if (!list.length) { toast('No places found.'); return; }
-    const box = $('#search-results'); box.innerHTML = '';
-    list.forEach(p => {
-      const d = document.createElement('div');
-      d.textContent = p.display_name;
-      d.onclick = () => {
-        box.classList.add('hidden');
-        $('#inp-search').value = '';
-        addStopAt(parseFloat(p.lon), parseFloat(p.lat), p.display_name.split(',')[0]);
-      };
-      box.appendChild(d);
-    });
-    box.classList.remove('hidden');
-  } catch (e) { loading(false); toast('Search failed — check your connection.'); }
+    const online = await nominatimSearch(q, 6);
+    if (seq !== searchSeq) return;
+    const merged = [...local];
+    for (const p of online) {
+      if (merged.some(x => haversine([x.lng, x.lat], [p.lng, p.lat]) < 1.2)) continue;
+      merged.push(p);
+    }
+    if (!merged.length) {
+      renderSearchResults([], t('noPlaces'));
+      return;
+    }
+    renderSearchResults(merged.slice(0, 12), online.length ? '' : t('onlineNoResult'));
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    if (local.length) renderSearchResults(local, t('onlineNoResult'));
+    else { renderSearchResults([], t('noPlaces')); toast(t('searchFailed')); }
+  }
+}
+
+/* ---- geocode a single place for the text route builder ---- */
+async function geocodeOne(q) {
+  const local = localSearch(q, 1)[0];
+  if (local && local.score >= 58) {
+    return {
+      name: local.name, nameZh: local.name, nameEn: local.en || local.name,
+      lng: local.lng, lat: local.lat, local: true,
+      display_name: [local.name, local.province].filter(Boolean).join(', '),
+    };
+  }
+  const online = await nominatimSearch(q, 1);
+  return online[0] || null;
 }
 
 /* ============================================================ route builders */
 async function buildFromText() {
   const raw = $('#inp-trip').value.trim();
-  if (!raw) { toast('Type a trip first, e.g. "Lisbon to Madrid by train".'); return; }
+  if (!raw) { toast(t('typeTripFirst')); return; }
   const tokens = raw
-    .split(/\n|→|->|—>|,|;|、|，|\bthen\b|\bto\b|到|去|再到/i)
+    .split(/\n|→|->|—>|–>|,|;|、|，|\bthen\b|\bto\b|然后|再到|再去|到|去/i)
     .map(t => t.trim()).filter(Boolean);
   if (!tokens.length) return;
 
   const parsed = tokens.map(tok => {
     let mode = null;
-    let place = tok;
-    const m = tok.match(/\bby\s+([a-z-]+)\b/i) || tok.match(/(?:坐|乘|搭)\s*(\S+?)(?:\s|$)/);
+    let place = tok.replace(/^(从|由|自)/, '').replace(/^(去|到|往)/, '').trim();
+    const m = tok.match(/\b(?:by|via)\s+([a-z-]+)/i)
+      || tok.match(/(?:乘坐|坐|乘|搭)\s*([\u4e00-\u9fffA-Za-z-]+)/);
     if (m) {
       const key = m[1].toLowerCase();
       mode = MODE_ALIASES[key] || MODE_ALIASES[m[1]] || null;
-      place = tok.replace(m[0], '').trim();
+      place = place.replace(m[0], '').trim();
+    }
+    if (!mode) {
+      // "高铁去上海", "自驾到杭州": a mode word can appear without 坐/乘.
+      const found = Object.keys(MODE_ALIASES).find(k => k.length > 1 && tok.includes(k)
+        && /[\u4e00-\u9fff]/.test(k));
+      if (found && tok.replace(found, '').trim()) {
+        mode = MODE_ALIASES[found];
+        place = place.replace(found, '').replace(/^(去|到|往)/, '').trim();
+      }
     }
     return { place, mode };
   }).filter(p => p.place);
 
-  loading(true, `Geocoding 0/${parsed.length}…`);
+  loading(true, t('geocoding', { i: 0, n: parsed.length }));
   const found = [];
   for (let i = 0; i < parsed.length; i++) {
-    loading(true, `Geocoding ${i + 1}/${parsed.length} — ${parsed[i].place}`);
+    loading(true, t('geocodingItem', { i: i + 1, n: parsed.length, name: parsed[i].place }));
     try {
       const hit = await geocodeOne(parsed[i].place);
-      if (hit) found.push({ ...parsed[i], lng: parseFloat(hit.lon), lat: parseFloat(hit.lat), name: hit.display_name.split(',')[0] });
-      else toast(`Couldn't find "${parsed[i].place}" — skipped.`);
-    } catch (e) { toast(`Lookup failed for "${parsed[i].place}".`); }
-    if (i < parsed.length - 1) await sleep(1050); // Nominatim: max 1 req/s
+      if (hit) {
+        found.push({
+          ...parsed[i], lng: parseFloat(hit.lng ?? hit.lon), lat: parseFloat(hit.lat),
+          name: hit.name, nameZh: hit.nameZh || hit.name, nameEn: hit.nameEn || hit.name,
+        });
+      } else toast(t('couldNotFind', { name: parsed[i].place }));
+    } catch (e) { toast(t('lookupFailed', { name: parsed[i].place })); }
+    if (i < parsed.length - 1) await sleep(80); // offline hits are instant
   }
   loading(false);
-  if (found.length < 2) { toast('Need at least two recognizable places.'); return; }
+  if (found.length < 2) { toast(t('needTwo')); return; }
 
-  stops = found.map(f => ({ id: id(), name: f.name, lng: f.lng, lat: f.lat, mode: f.mode || 'plane' }));
+  let carryMode = 'plane';
+  stops = found.map(f => {
+    carryMode = f.mode || carryMode;
+    return {
+      id: id(), name: LANG === 'en' ? (f.nameEn || f.name) : (f.nameZh || f.name),
+      nameZh: f.nameZh, nameEn: f.nameEn, lng: f.lng, lat: f.lat, mode: carryMode,
+    };
+  });
   afterStopsChange();
-  toast(`Built ${stops.length} stops from your text.`);
+  toast(t('builtStops', { n: stops.length }));
 }
 
 /* ---- GPX / KML / GeoJSON import ---- */
@@ -755,13 +1303,13 @@ function importRouteFile(file) {
       if (/\.gpx$/i.test(file.name)) pts = parseGPX(text);
       else if (/\.kml$/i.test(file.name)) pts = parseKML(text);
       else pts = parseGeoJSON(text);
-      if (!pts.length) { toast('No usable points found in that file.'); return; }
+      if (!pts.length) { toast(t('noUsablePoints')); return; }
       pts = samplePoints(pts, 30);
       stops = pts.map(p => ({ id: id(), name: p.name || `${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}`, lng: p.lng, lat: p.lat, mode: p.mode || 'car' }));
       afterStopsChange();
       stops.filter(s => /^[\d.,\s-]+$/.test(s.name)).slice(0, 5).forEach((s, i) => setTimeout(() => reverseName(s), i * 1100));
-      toast(`Imported ${stops.length} stops from ${file.name}.`);
-    } catch (e) { toast('Could not parse that file.'); }
+      toast(t('imported', { n: stops.length, file: file.name }));
+    } catch (e) { toast(t('parseFailed')); }
   };
   rd.readAsText(file);
 }
@@ -846,7 +1394,7 @@ async function precomputeLegs() {
       if (m.route === 'osrm' && haversine(A, B) < m.maxKm) {
         try { coords = await osrmRoute([from.lng, from.lat], [to.lng, to.lat]); } catch (e) { /* fall back */ }
       } else if (m.route === 'sea') {
-        loading(true, `Routing ${to.name} by sea…`);
+        loading(true, t('routingSea', { name: stopLabel(to) }));
         try { coords = await seaRoute(A, B); } catch (e) { /* fall back */ }
       }
     }
@@ -925,7 +1473,7 @@ async function prewarmTiles(token) {
       map.jumpTo({ center: pos, zoom: leg.zoom, pitch: settings.globe ? 0 : (settings.pitch ? 22 : 8), bearing: 0 });
       await waitForTiles(700);
       done++;
-      loading(true, `Caching map along route… ${Math.round(done / total * 100)}%`);
+      loading(true, t('caching', { pct: Math.round(done / total * 100) }));
     }
   }
 }
@@ -982,8 +1530,8 @@ function buildTimeline() {
   const pitchCruise = settings.globe ? 0 : (settings.pitch ? 16 : 0);
   const pitchMax = settings.globe ? 0 : (settings.pitch ? 26 : 8);
   const ov = overviewCam();
-  const segs = []; let t = 0;
-  const add = (type, dur, data) => { segs.push({ type, start: t, end: t + dur, ...data }); t += dur; };
+  const segs = []; let clock = 0;
+  const add = (type, dur, data) => { segs.push({ type, start: clock, end: clock + dur, ...data }); clock += dur; };
 
   add('intro', clamp(2200 / Math.min(p, 1.2), 1600, 3200), { cam: ov, reached: 1 });
   let prevCam = ov;
@@ -999,7 +1547,10 @@ function buildTimeline() {
     const startCam = { center: trailPointAt(leg.pf0), zoom: leg.zoom, pitch: pitchCruise };
     const endCam = { center: trailPointAt(leg.pf1), zoom: leg.zoom, pitch: pitchCruise };
     const stopCam = { center: endCam.center, zoom: leg.zoom + 0.55, pitch: pitchCruise };
-    const caption = `${leg.from.name}  →  ${leg.to.name}   ·   ${leg.mode.label}   ·   ${Math.round(leg.dist)} km`;
+    const caption = t('caption', {
+      from: stopLabel(leg.from), to: stopLabel(leg.to),
+      mode: modeLabel(leg.modeKey), km: Math.round(leg.dist),
+    });
     add('approach', clamp(750 / p, 350, 950), { a: prevCam, b: startCam, caption, reached: i + 1 });
     add('travel', clamp(2200 + leg.dist * 1.1, 2200, 7000) / p, { leg: i, caption, pitchCruise, pitchMax, reached: i + 1 });
     add('arrival', clamp(680 / p, 400, 950), { a: endCam, b: stopCam, leg: i, caption, reached: i + 2 });
@@ -1008,7 +1559,7 @@ function buildTimeline() {
   });
 
   add('pullback', clamp(1900 / p, 1200, 2600), { a: prevCam, b: ov, reached: stops.length });
-  return { total: t, segs };
+  return { total: clock, segs };
 }
 
 function paintFrame(tl, tMs) {
@@ -1055,7 +1606,7 @@ function paintFrame(tl, tMs) {
     cam = interpCam(seg.a, seg.b, lt);
   } else if (seg.type === 'photo') {
     anim.phase = 'pause'; anim.caption = seg.caption; anim.marker = null;
-    anim.photo = seg.stop.img; anim.photoLabel = seg.stop.name;
+    anim.photo = seg.stop.img; anim.photoLabel = stopLabel(seg.stop);
     anim.photoAlpha = lt < 0.16 ? lt / 0.16 : (lt > 0.86 ? (1 - lt) / 0.14 : 1);
     cam = seg.cam;
   } else { // pullback
@@ -1104,8 +1655,8 @@ function mapFrameSettled(maxWaitMs = 900) {
 let muxerModPromise = null;
 function loadMuxer() {
   if (!muxerModPromise) {
-    muxerModPromise = import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm')
-      .catch(() => import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm'))   // one retry
+    muxerModPromise = import('./vendor/mp4-muxer.mjs')
+      .catch(() => import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm'))
       .catch(e => { muxerModPromise = null; throw e; });
   }
   return muxerModPromise;
@@ -1223,10 +1774,10 @@ async function renderOffline(tl, token) {
       vf.close();
     } catch (e) { encErr = e; continue; }               // handled at loop top
     while (encoder.encodeQueueSize > 8) await sleep(4);
-    if (i % 3 === 0) loading(true, `Rendering video… ${Math.round(i / frames * 100)}%`);
+    if (i % 3 === 0) loading(true, t('rendering', { pct: Math.round(i / frames * 100) }));
   }
   if (encErr) { try { encoder.close(); } catch (e) {} console.warn('offline export failed late:', encErr); return null; }
-  loading(true, 'Finalizing video…');
+  loading(true, t('finalizing'));
   await encoder.flush();
   muxer.finalize();
   loading(false);
@@ -1238,18 +1789,20 @@ function publishVideo(blob, ext) {
   const a = $('#btn-download');
   a.href = url;
   a.download = `triptrail.${ext}`;
-  $('#dl-label').textContent = `Download ${ext.toUpperCase()} (${(blob.size / 1048576).toFixed(1)} MB)`;
+  lastVideo = { ext: ext.toUpperCase(), size: (blob.size / 1048576).toFixed(1) };
+  $('#dl-label').textContent = t('downloadLabel', lastVideo);
   a.classList.remove('hidden');
-  toast(`Video ready as ${ext.toUpperCase()} — click "Download".`);
+  toast(t('videoReady', { ext: ext.toUpperCase() }));
 }
 
 /* ---- main entry ---- */
 async function play(record) {
-  if (stops.length < 2) { toast('Add at least two stops.'); return; }
+  if (stops.length < 2) { toast(t('addTwoStops')); return; }
   if (anim.playing) return;
   syncSettingsFromUI();
+  $('#place-layer').classList.add('hidden');
 
-  loading(true, 'Plotting your route…');
+  loading(true, t('plottingRoute'));
   // Preview renders at 1x for smoothness; export keeps full resolution
   // (×quality) — offline rendering makes its cost irrelevant.
   if (record) {
@@ -1273,14 +1826,14 @@ async function play(record) {
   setTrailReveal(0);
 
   if (record) {
-    loading(true, 'Caching map along route… 0%');
+    loading(true, t('caching', { pct: 0 }));
     await prewarmTiles(token);
     if (token !== cancelToken) { loading(false); return; }
   }
 
   const tl = buildTimeline();
   fitToStops(true);
-  loading(true, 'Loading overview…');
+  loading(true, t('loadingOverview'));
   await waitForTiles(record ? 5000 : 2000);
   loading(false);
   if (token !== cancelToken) return;
@@ -1300,7 +1853,7 @@ async function play(record) {
       if (token === cancelToken) { publishVideo(blob, 'mp4'); endPlay(); }
       return;
     }
-    // muxer/encoder unavailable → realtime fallback below
+    // muxer/encoder unavailable — realtime fallback below
   }
 
   startMusic();
@@ -1320,9 +1873,11 @@ function endPlay() {
   stopMusic();
   map.setPixelRatio(basePixelRatio);
   $('#output').classList.remove('show');
+  $('#place-layer').classList.remove('hidden');
   setControls(false);
   setSrc('trail', EMPTY);
   refreshRoutePreview();
+  schedulePlaceLayer();
 }
 
 function stopPlay() { cancelToken++; endPlay(); }
@@ -1360,7 +1915,7 @@ function startCompositor() {
       ctx.fillStyle = bg; ctx.fillRect(0, 0, out.width, out.height);
       ctx.drawImage(m, 0, 0, out.width, out.height);
     } else {
-      ctx.clearRect(0, 0, out.width, out.height);   // transparent → live map shows through
+      ctx.clearRect(0, 0, out.width, out.height);   // transparent — live map shows through
     }
     drawScene(ctx, out.width, out.height, dpr);
   };
@@ -1373,7 +1928,7 @@ function startCompositor() {
   tick(pump);
   compositeFn();
 
-  if (anim.recording && document.hidden) toast('Keep this tab visible while recording for smooth video.');
+  if (anim.recording && document.hidden) toast(t('keepVisible'));
 }
 
 function stopCompositor() {
@@ -1402,30 +1957,9 @@ function drawScene(ctx, W, H, dpr) {
   const s = dpr;
   const accent = settings.accent;
 
-  // ---- city pins + labels (revealed only once a stop is reached) ----
-  stops.forEach((st, i) => {
-    const reached = anim.phase === 'idle' || i < anim.reached;
-    if (!reached) return;
-    if (occludedByGlobe(st.lng, st.lat)) return;
-    const [x, y] = project(st.lng, st.lat, dpr);
-    if (x < -50 || x > W + 50 || y < -50 || y > H + 50) return;
-    ctx.beginPath(); ctx.arc(x, y, 6 * s, 0, Math.PI * 2);
-    ctx.fillStyle = accent;
-    ctx.fill();
-    ctx.lineWidth = 2.5 * s; ctx.strokeStyle = '#fff'; ctx.stroke();
-    ctx.beginPath(); ctx.arc(x, y, 11 * s, 0, Math.PI * 2);
-    ctx.strokeStyle = hexA(accent, 0.45); ctx.lineWidth = 2 * s; ctx.stroke();
-    if (settings.labels) {
-      const fs = 15 * s;
-      ctx.font = `700 ${fs}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
-      const tw = ctx.measureText(st.name).width;
-      const px = 9 * s, py = 6 * s, lx = x + 12 * s, ly = y - fs - 4 * s;
-      roundRect(ctx, lx, ly, tw + px * 2, fs + py * 2, 7 * s);
-      ctx.fillStyle = 'rgba(12,16,21,.82)'; ctx.fill();
-      ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle';
-      ctx.fillText(st.name, lx + px, ly + (fs + py * 2) / 2);
-    }
-  });
+  // ---- city labels + every waypoint (waypoints stay above the city layer) ----
+  drawCityLabels(ctx, W, H, dpr);
+  drawWaypoints(ctx, W, H, dpr);
 
   // ---- arrival ripple (timeline-driven) ----
   if (anim.pulse && !occludedByGlobe(anim.pulse.lng, anim.pulse.lat)) {
@@ -1485,11 +2019,11 @@ function drawScene(ctx, W, H, dpr) {
     ctx.fillStyle = '#fff';
     ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 18 * s;
     const tfs = (settings.aspect === '9:16' ? 46 : 54) * s;
-    ctx.font = `800 ${tfs}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
+    ctx.font = `800 ${tfs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
     wrapText(ctx, settings.title || '', W / 2, H / 2 - tfs * 0.2, W * 0.86, tfs * 1.15);
     if (settings.subtitle) {
       ctx.shadowBlur = 10 * s;
-      ctx.font = `500 ${tfs * 0.42}px system-ui, sans-serif`;
+      ctx.font = `500 ${tfs * 0.42}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
       ctx.fillStyle = hexA(accent, 1);
       ctx.fillText(settings.subtitle, W / 2, H / 2 + tfs * 0.75);
     }
@@ -1514,7 +2048,7 @@ function drawScene(ctx, W, H, dpr) {
     ctx.shadowColor = 'transparent';
     ctx.drawImage(img, -w / 2, -h / 2, w, h);
     ctx.fillStyle = '#333';
-    ctx.font = `600 ${16 * s}px system-ui, sans-serif`;
+    ctx.font = `600 ${16 * s}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(anim.photoLabel || '', 0, h / 2 + frame + band / 2 - 4 * s);
     ctx.restore();
@@ -1523,9 +2057,15 @@ function drawScene(ctx, W, H, dpr) {
 
   // ---- lower-third caption ----
   if (anim.caption && (anim.phase === 'leg' || anim.phase === 'pause')) {
-    const fs = (settings.aspect === '9:16' ? 17 : 19) * s;
-    ctx.font = `600 ${fs}px system-ui, sans-serif`;
-    const tw = ctx.measureText(anim.caption).width;
+    let fs = (settings.aspect === '9:16' ? 17 : 19) * s;
+    ctx.font = `600 ${fs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
+    let tw = ctx.measureText(anim.caption).width;
+    const maxTextW = W * 0.74 - 32 * s;
+    if (tw > maxTextW) {
+      fs = Math.max(10 * s, fs * maxTextW / tw);
+      ctx.font = `600 ${fs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
+      tw = ctx.measureText(anim.caption).width;
+    }
     const px = 16 * s, h = fs + 18 * s;
     const bx = 26 * s, by = H - h - 26 * s;
     roundRect(ctx, bx, by, tw + px * 2, h, 10 * s);
@@ -1537,7 +2077,7 @@ function drawScene(ctx, W, H, dpr) {
   // ---- optional custom watermark (off by default) ----
   if (settings.watermark) {
     const fs = 14 * s;
-    ctx.font = `600 ${fs}px system-ui, sans-serif`;
+    ctx.font = `600 ${fs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
     ctx.globalAlpha = 0.8; ctx.fillStyle = '#fff'; ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'right';
     ctx.fillText(settings.watermark, W - 22 * s, H - 22 * s);
@@ -1556,9 +2096,13 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 function wrapText(ctx, text, cx, cy, maxW, lh) {
-  const words = text.split(' '); let lineStr = '', lines = [];
-  for (const w of words) {
-    const test = lineStr ? lineStr + ' ' + w : w;
+  text = String(text || '');
+  const hasSpace = /\s/.test(text);
+  const units = hasSpace ? text.split(/\s+/) : [...text];
+  const sep = hasSpace ? ' ' : '';
+  let lineStr = '', lines = [];
+  for (const w of units) {
+    const test = lineStr ? lineStr + sep + w : w;
     if (ctx.measureText(test).width > maxW && lineStr) { lines.push(lineStr); lineStr = w; }
     else lineStr = test;
   }
@@ -1646,6 +2190,9 @@ function syncSettingsFromUI() {
   settings.accent = $('#inp-accent').value;
   settings.pace = parseFloat($('#rng-pace').value);
   settings.labels = $('#chk-labels').checked;
+  settings.cities = $('#chk-cities').checked;
+  settings.borders = $('#chk-borders').checked;
+  settings.cityLevel = $('#sel-city-level').value;
   settings.roads = $('#chk-roads').checked;
   settings.pitch = $('#chk-pitch').checked;
   settings.glow = $('#chk-glow').checked;
@@ -1654,14 +2201,165 @@ function syncSettingsFromUI() {
   settings.quality = parseInt($('#sel-quality').value, 10);
 }
 
+/* ============================================================ language + region */
+function paceLabel() {
+  if (settings.pace < 0.8) return t('paceSlow');
+  if (settings.pace > 1.4) return t('paceFast');
+  return t('paceNormal');
+}
+
+function applyLanguage(initial = false) {
+  document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
+  document.body.dataset.lang = LANG;
+  document.title = t('docTitle');
+
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.dataset.i18n;
+    const val = t(key);
+    if (val !== key) el.textContent = val;
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = t(el.dataset.i18nTitle);
+  });
+  document.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
+    el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel));
+  });
+  document.querySelectorAll('[data-i18n-label]').forEach(el => {
+    el.setAttribute('label', t(el.dataset.i18nLabel));
+  });
+
+  $('#lang-label').textContent = LANG === 'zh' ? 'EN' : '中';
+  $('#btn-lang').title = t('switchLang');
+  $('#btn-lang').setAttribute('aria-label', t('switchLang'));
+
+  const titleInput = $('#inp-title');
+  const subInput = $('#inp-subtitle');
+  if (initial || !titleInput.dataset.edited) titleInput.value = t('defaultTitle');
+  if (initial || !subInput.dataset.edited) subInput.value = t('defaultSubtitle');
+  if (!$('#music').src) $('#music-name').textContent = t('none');
+  else if (musicFileName) $('#music-name').textContent = musicFileName;
+  if (lastVideo && !$('#btn-download').classList.contains('hidden')) {
+    $('#dl-label').textContent = t('downloadLabel', { ext: lastVideo.ext, size: lastVideo.size });
+  }
+  $('#pace-val').textContent = paceLabel();
+  updateRegionUI(false);
+  renderStops();
+  schedulePlaceLayer();
+}
+
+function updateRegionUI(announce) {
+  document.querySelectorAll('#region-switch .seg-btn').forEach(btn => {
+    const active = btn.dataset.region === settings.region;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+  $('#region-badge').textContent = settings.region === 'cn' ? 'CN' : 'GLOBAL';
+  document.body.dataset.region = settings.region;
+  if (announce) toast(settings.region === 'cn' ? t('regionSwitchedCn') : t('regionSwitchedGlobal'));
+}
+
+function setRegion(region, announce = true) {
+  if (region !== 'cn' && region !== 'global') return;
+  settings.region = region;
+  updateRegionUI(announce);
+
+  if (map) {
+    try {
+      if (region === 'cn') {
+        map.setMaxBounds(CHINA_BOUNDS);
+        map.setMinZoom(2.8);
+      } else {
+        map.setMaxBounds(null);
+        map.setMinZoom(0);
+      }
+    } catch (e) { console.warn('maxBounds update failed:', e); }
+
+    // Keep the basemap sensible for the selected region.
+    let nextStyle = settings.style;
+    if (region === 'cn' && !isChinaStyle(nextStyle)) nextStyle = 'amap';
+    if (region === 'global' && nextStyle.startsWith('amap')) nextStyle = 'satellite';
+    if (nextStyle !== settings.style) {
+      settings.style = nextStyle;
+      $('#sel-style').value = nextStyle;
+      map.setStyle(styleSpec(nextStyle), { diff: false });
+    } else {
+      ensureChinaOverlay();
+      setBoundaryVisibility();
+    }
+
+    if (stops.length) fitToStops(false);
+    else if (region === 'cn') map.flyTo({ center: [104.2, 35.6], zoom: 3.9, duration: 600 });
+    else map.flyTo({ center: [5, 44], zoom: 3.4, duration: 600 });
+  }
+  $('#search-results').classList.add('hidden');
+  savePrefs();
+  schedulePlaceLayer();
+}
+
+/* ============================================================ wiring */
+function applyInitialControls() {
+  if (settings.region === 'cn' && !isChinaStyle(settings.style)) settings.style = 'amap';
+  if (settings.region === 'global' && settings.style.startsWith('amap')) settings.style = 'satellite';
+  $('#sel-style').value = settings.style;
+  if (!$('#sel-style').value) { settings.style = 'amap'; $('#sel-style').value = 'amap'; }
+  $('#sel-city-level').value = String(settings.cityLevel || 'auto');
+  if (!$('#sel-city-level').value) { settings.cityLevel = 'auto'; $('#sel-city-level').value = 'auto'; }
+  $('#chk-cities').checked = !!settings.cities;
+  $('#chk-borders').checked = !!settings.borders;
+  $('#chk-labels').checked = !!settings.labels;
+  $('#chk-roads').checked = !!settings.roads;
+  $('#chk-glow').checked = !!settings.glow;
+  $('#pace-val').textContent = paceLabel();
+  updateRegionUI(false);
+}
+
 function wire() {
-  $('#btn-add').onclick = doSearch;
-  $('#inp-search').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+  $('#btn-add').onclick = () => doSearch(true);
+  let searchTimer = 0;
+  const searchInput = $('#inp-search');
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchSeq++;
+    const q = searchInput.value.trim();
+    if (!q) { $('#search-results').classList.add('hidden'); return; }
+    searchTimer = setTimeout(doSearch, 260);
+  });
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveSearchActive(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveSearchActive(-1); }
+    else if (e.key === 'Escape') { $('#search-results').classList.add('hidden'); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      const items = currentSearchResults();
+      const active = window._ttSearchActive;
+      if (items.length && active >= 0) chooseSearchResult(items[active]);
+      else doSearch(true);
+    }
+  });
   $('#btn-clear').onclick = () => { stops = []; afterStopsChange(); };
+
+  $('#btn-lang').onclick = () => {
+    LANG = LANG === 'zh' ? 'en' : 'zh';
+    applyLanguage();
+    settings.title = $('#inp-title').value;
+    settings.subtitle = $('#inp-subtitle').value;
+    savePrefs();
+    toast(t('langSwitched'));
+  };
+
+  document.querySelectorAll('#region-switch .seg-btn').forEach(btn => {
+    btn.onclick = () => setRegion(btn.dataset.region, true);
+  });
 
   $('#btn-build').onclick = buildFromText;
   $('#btn-import').onclick = () => $('#file-route').click();
   $('#file-route').onchange = e => { if (e.target.files[0]) importRouteFile(e.target.files[0]); e.target.value = ''; };
+
+  $('#inp-title').addEventListener('input', e => { e.target.dataset.edited = '1'; settings.title = e.target.value; });
+  $('#inp-subtitle').addEventListener('input', e => { e.target.dataset.edited = '1'; settings.subtitle = e.target.value; });
 
   $('#file-photo').onchange = e => {
     const f = e.target.files[0]; e.target.value = '';
@@ -1669,7 +2367,7 @@ function wire() {
     if (!f || !s) return;
     const url = URL.createObjectURL(f);
     const img = new Image();
-    img.onload = () => { s.photoUrl = url; s.img = img; renderStops(); toast(`Photo attached to ${s.name}.`); };
+    img.onload = () => { s.photoUrl = url; s.img = img; renderStops(); toast(t('photoAttached', { name: stopLabel(s) })); };
     img.src = url;
   };
 
@@ -1677,13 +2375,15 @@ function wire() {
   $('#file-music').onchange = e => {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
+    musicFileName = f.name;
     $('#music').src = URL.createObjectURL(f);
     $('#music-name').textContent = f.name;
     $('#btn-music-clear').classList.remove('hidden');
   };
   $('#btn-music-clear').onclick = () => {
     const m = $('#music'); m.pause(); m.removeAttribute('src'); m.load();
-    $('#music-name').textContent = '(none)';
+    musicFileName = '';
+    $('#music-name').textContent = t('none');
     $('#btn-music-clear').classList.add('hidden');
   };
 
@@ -1695,20 +2395,36 @@ function wire() {
     settings.accent = e.target.value;
     document.documentElement.style.setProperty('--accent', settings.accent);
     TRAIL_LAYERS.forEach(lid => { if (map && map.getLayer(lid)) map.setPaintProperty(lid, 'line-color', settings.accent); });
+    schedulePlaceLayer();
   };
   $('#sel-style').onchange = e => {
     settings.style = e.target.value;
-    map.setStyle(styleSpec(settings.style), { diff: false });
+    savePrefs();
+    if (map) map.setStyle(styleSpec(settings.style), { diff: false });
   };
   $('#sel-aspect').onchange = e => { settings.aspect = e.target.value; layoutStage(); };
   $('#chk-globe').onchange = e => { settings.globe = e.target.checked; applyProjection(); };
   $('#chk-pitch').onchange = e => { settings.pitch = e.target.checked; map.easeTo({ pitch: settings.pitch ? 50 : 0, duration: 500 }); };
-  $('#chk-labels').onchange = e => settings.labels = e.target.checked;
+  $('#chk-labels').onchange = e => { settings.labels = e.target.checked; schedulePlaceLayer(); };
+  $('#chk-cities').onchange = e => { settings.cities = e.target.checked; savePrefs(); schedulePlaceLayer(); };
+  $('#chk-borders').onchange = e => {
+    settings.borders = e.target.checked; savePrefs();
+    ensureChinaOverlay();
+    setBoundaryVisibility();
+  };
+  $('#sel-city-level').onchange = e => {
+    settings.cityLevel = e.target.value;
+    savePrefs();
+    schedulePlaceLayer();
+  };
   $('#chk-roads').onchange = e => settings.roads = e.target.checked;
-  $('#chk-glow').onchange = e => { settings.glow = e.target.checked; if (map) map.setStyle(styleSpec(settings.style), { diff: false }); };
+  $('#chk-glow').onchange = e => {
+    settings.glow = e.target.checked;
+    if (map) map.setStyle(styleSpec(settings.style), { diff: false });
+  };
   $('#rng-pace').oninput = e => {
     settings.pace = parseFloat(e.target.value);
-    $('#pace-val').textContent = settings.pace < 0.8 ? 'Cinematic' : settings.pace > 1.4 ? 'Snappy' : 'Normal';
+    $('#pace-val').textContent = paceLabel();
   };
   $('#sel-format').onchange = e => settings.format = e.target.value;
   $('#sel-quality').onchange = e => settings.quality = parseInt(e.target.value, 10);
@@ -1739,12 +2455,17 @@ function wire() {
 /* ============================================================ boot */
 function boot() {
   window.addEventListener('unhandledrejection', e => console.warn('unhandled rejection:', e.reason));
+  applyLanguage(true);
+  settings.title = $('#inp-title').value;
+  settings.subtitle = $('#inp-subtitle').value;
   document.documentElement.style.setProperty('--accent', settings.accent);
   if (window.matchMedia('(max-width:820px)').matches) document.body.classList.add('nav-hidden');
+  applyInitialControls();
   wire();
   renderStops();
   initMap();
   layoutStage();
-  setTimeout(layoutStage, 300);
+  loadChinaData();
+  setTimeout(() => { layoutStage(); setRegion(settings.region, false); schedulePlaceLayer(); }, 350);
 }
 boot();
