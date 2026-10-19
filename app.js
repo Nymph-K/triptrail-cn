@@ -27,6 +27,7 @@ function savePrefs() {
     localStorage.setItem('triptrail.prefs', JSON.stringify({
       lang: LANG, region: settings.region, style: settings.style,
       cityLevel: settings.cityLevel, cities: settings.cities, borders: settings.borders,
+      mediaInterval: settings.mediaInterval,
     }));
   } catch { /* private mode */ }
 }
@@ -139,6 +140,7 @@ const settings = {
   roads: true,
   glow: true,
   pace: 1,
+  mediaInterval: clamp(Number(PREFS.mediaInterval) || 3, 1, 10),
   title: t('defaultTitle'),
   subtitle: t('defaultSubtitle'),
   watermark: '',
@@ -160,6 +162,10 @@ const anim = {
   photo: null,
   photoLabel: '',
   photoAlpha: 0,
+  mediaStop: null,
+  mediaElapsed: 0,
+  mediaInterval: 3000,
+  mediaCount: 0,
   pulse: null,            // { lng, lat, start } arrival ripple
   fullCoords: [],
   legs: [],
@@ -175,7 +181,27 @@ const boundaryCache = {};
 let placeRaf = 0;
 let musicFileName = '';
 let lastVideo = null;
+let activeMediaVideo = null;
 const CHINA_BOUNDS = [[73, 3], [136, 54]];
+let customPlaces = (() => {
+  try {
+    const arr = JSON.parse(localStorage.getItem('triptrail.customPlaces') || '[]');
+    return Array.isArray(arr) ? arr.filter(p => p && p.name && Number.isFinite(p.lng) && Number.isFinite(p.lat)) : [];
+  } catch { return []; }
+})();
+
+function saveCustomPlaces() {
+  try { localStorage.setItem('triptrail.customPlaces', JSON.stringify(customPlaces)); } catch { /* private mode */ }
+}
+
+function rebuildPlaceIndex() {
+  if (!chinaData.ready) return;
+  chinaData.index = [
+    ...chinaData.cities.map(p => ({ ...p, city: p.province })),
+    ...chinaData.pois,
+    ...customPlaces.map(p => ({ ...p, kind: 'custom', level: 4, en: p.en || p.name, pinyin: p.pinyin || '' })),
+  ];
+}
 
 /* ============================================================ helpers */
 function id() { return Math.random().toString(36).slice(2, 9); }
@@ -388,11 +414,20 @@ function arcLine(a, b, bend, n = 72) {
 }
 
 async function osrmRoute(a, b) {
-  const url = `https://router.project-osrm.org/route/v1/driving/${a[0]},${a[1]};${b[0]},${b[1]}?overview=full&geometries=geojson`;
-  const r = await fetch(url);
-  const j = await r.json();
-  if (j.code === 'Ok' && j.routes && j.routes[0]) return j.routes[0].geometry.coordinates;
-  throw new Error('no route');
+  const path = `${a[0]},${a[1]};${b[0]},${b[1]}?overview=full&geometries=geojson`;
+  const services = [
+    `https://router.project-osrm.org/route/v1/driving/${path}`,
+    `https://routing.openstreetmap.de/routed-car/route/v1/driving/${path}`,
+  ];
+  for (const url of services) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j.code === 'Ok' && j.routes && j.routes[0]) return j.routes[0].geometry.coordinates;
+    } catch { /* try the next road service */ }
+  }
+  throw new Error('no road route');
 }
 
 function buildPath(coords) {
@@ -813,7 +848,304 @@ function drawPlaceLayer() {
   drawMapLabels(ctx, canvas.width, canvas.height, dpr);
 }
 
-/* ============================================================ stops UI */
+/* ============================================================ stop media
+   Each stop owns a stack of media items. Images/GIFs are drawn from decoded
+   frames; videos and Live Photos are played through hidden <video> elements
+   and painted onto the same canvas as the map overlays. */
+
+function mediaKindLabel(kind) {
+  if (kind === 'gif') return t('kindGif');
+  if (kind === 'video') return t('kindVideo');
+  if (kind === 'live') return t('kindLive');
+  return t('kindImage');
+}
+function mediaThumbSrc(m) {
+  return (m && (m.poster || ((m.kind === 'image' || m.kind === 'gif') ? m.src : ''))) || '';
+}
+
+function fileBaseName(name) {
+  return String(name || '').replace(/\.[^.]+$/, '').toLowerCase();
+}
+function isGifFile(file) {
+  return file.type === 'image/gif' || /\.gif$/i.test(file.name);
+}
+function isHeicFile(file) {
+  return /heic|heif/i.test(file.type) || /\.(heic|heif)$/i.test(file.name);
+}
+function isImageFile(file) {
+  return /^image\//i.test(file.type) || /\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(file.name);
+}
+function isVideoFile(file) {
+  return /^video\//i.test(file.type) || /\.(mp4|m4v|mov|webm|ogv)$/i.test(file.name);
+}
+
+async function decodeGifFrames(file) {
+  if (typeof ImageDecoder === 'undefined') return null;
+  try {
+    const type = file.type === 'image/gif' ? file.type : 'image/gif';
+    const decoder = new ImageDecoder({ data: await file.arrayBuffer(), type });
+    await decoder.tracks.ready;
+    const track = decoder.tracks.selectedTrack;
+    const count = track.frameCount || 0;
+    if (!count || count > 600) { decoder.close(); return null; }
+    const step = Math.max(1, Math.ceil(count / 120));
+    const frames = [];
+    let total = 0, bucket = 0, nextSample = 0;
+    for (let i = 0; i < count; i++) {
+      const { image } = await decoder.decode({ frameIndex: i });
+      let dur = (image.duration || 0) / 1000;
+      if (!dur || dur < 10) dur = 100;
+      total += dur;
+      bucket += dur;
+      if (i >= nextSample) {
+        const bitmap = await createImageBitmap(image);
+        frames.push({ bitmap, duration: bucket });
+        bucket = 0;
+        nextSample = i + step;
+      }
+      image.close();
+    }
+    if (bucket && frames.length) frames[frames.length - 1].duration += bucket;
+    decoder.close();
+    if (!frames.length) return null;
+    return { frames, total: Math.max(100, total) };
+  } catch (e) {
+    console.warn('GIF decode failed, using animated image fallback:', e);
+    return null;
+  }
+}
+
+function loadImageElement(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+async function imageMediaFromFile(file) {
+  const url = URL.createObjectURL(file);
+  const img = await loadImageElement(url);
+  const media = {
+    id: id(), kind: isGifFile(file) ? 'gif' : 'image', name: file.name,
+    src: url, objectUrl: url, img,
+    width: img.naturalWidth || 1200, height: img.naturalHeight || 800,
+    duration: 0,
+  };
+  if (media.kind === 'gif') {
+    const decoded = await decodeGifFrames(file);
+    if (decoded) {
+      media.frames = decoded.frames;
+      media.totalDuration = decoded.total;
+    }
+  }
+  return media;
+}
+
+function waitForVideo(video, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = err => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.removeEventListener('loadedmetadata', ok);
+      video.removeEventListener('error', bad);
+      if (err) reject(err); else resolve();
+    };
+    const ok = () => finish();
+    const bad = () => finish(new Error('video decode failed'));
+    const timer = setTimeout(() => finish(new Error('video timeout')), timeoutMs);
+    video.addEventListener('loadedmetadata', ok);
+    video.addEventListener('error', bad);
+    video.load();
+  });
+}
+
+async function videoPoster(video) {
+  try {
+    if (video.readyState < 2) {
+      await new Promise(res => {
+        const done = () => { video.removeEventListener('loadeddata', done); res(); };
+        video.addEventListener('loadeddata', done);
+        setTimeout(done, 1500);
+      });
+    }
+    const w = 480;
+    const h = Math.max(1, Math.round(w * (video.videoHeight || 9) / (video.videoWidth || 16)));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(video, 0, 0, w, h);
+    return c.toDataURL('image/jpeg', 0.82);
+  } catch { return ''; }
+}
+
+async function videoMediaFromFile(file, kind, posterFile) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.src = url;
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  video.preload = 'auto';
+  video.loop = kind === 'video';
+  document.querySelector('#media-bin').appendChild(video);
+  try {
+    await waitForVideo(video);
+    let duration = Number.isFinite(video.duration) ? video.duration * 1000 : 3000;
+    if (!duration || duration < 100) duration = 3000;
+    let poster = await videoPoster(video);
+    if (posterFile) {
+      const pu = URL.createObjectURL(posterFile);
+      try {
+        const img = await loadImageElement(pu);
+        const c = document.createElement('canvas');
+        c.width = 480;
+        c.height = Math.max(1, Math.round(480 * img.naturalHeight / Math.max(1, img.naturalWidth)));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        poster = c.toDataURL('image/jpeg', 0.84);
+      } catch { /* use video frame */ }
+      URL.revokeObjectURL(pu);
+    }
+    return {
+      id: id(), kind, name: file.name, src: url, objectUrl: url,
+      video, poster, posterImg: (() => { const im = new Image(); im.src = poster; return im; })(),
+      width: video.videoWidth || 1280, height: video.videoHeight || 720,
+      duration,
+    };
+  } catch (e) {
+    video.pause();
+    video.remove();
+    URL.revokeObjectURL(url);
+    throw e;
+  }
+}
+
+async function addMediaFiles(stop, files) {
+  if (!stop || !files.length) return;
+  loading(true, t('mediaLoading'));
+  const groups = new Map();
+  for (const f of files) {
+    const key = fileBaseName(f.name) || `file-${groups.size}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  const added = [];
+  let skipped = 0;
+  try {
+    for (const group of groups.values()) {
+      const images = group.filter(f => isImageFile(f) && !isHeicFile(f));
+      const heic = group.some(isHeicFile);
+      const video = group.find(isVideoFile);
+      const wantedLive = !!video && !!(images.length || heic);
+      if (video) {
+        try {
+          added.push(await videoMediaFromFile(video, wantedLive ? 'live' : 'video', images[0] || null));
+          for (const img of images.slice(1)) added.push(await imageMediaFromFile(img));
+        } catch (e) {
+          console.warn('video media load failed, falling back to images:', e);
+          for (const img of images) {
+            try { added.push(await imageMediaFromFile(img)); } catch { skipped++; }
+          }
+          if (!images.length) skipped++;
+        }
+      } else {
+        for (const img of images) {
+          try { added.push(await imageMediaFromFile(img)); } catch { skipped++; }
+        }
+      }
+      if (!video && !images.length) skipped++;
+    }
+  } finally {
+    loading(false);
+  }
+  if (!added.length) {
+    toast(t('mediaUnsupported', { n: skipped }), 4200);
+    if (files.some(isHeicFile)) toast(t('mediaHeicUnsupported'), 5200);
+    return;
+  }
+  stop.media = [...(stop.media || []), ...added];
+  renderStops();
+  toast(t('mediaAdded', { n: added.length }));
+  if (skipped) toast(t('mediaUnsupported', { n: skipped }), 4200);
+  if (added.some(m => m.kind === 'video' || m.kind === 'live')) toast(t('videoRealtimeExport'), 4200);
+}
+
+function disposeMedia(media) {
+  if (!media) return;
+  try { if (media.video) { media.video.pause(); media.video.removeAttribute('src'); media.video.load(); media.video.remove(); } } catch { /* ignore */ }
+  try { if (media.objectUrl) URL.revokeObjectURL(media.objectUrl); } catch { /* ignore */ }
+  for (const f of media.frames || []) { try { f.bitmap.close(); } catch { /* ignore */ } }
+  if (activeMediaVideo === media) activeMediaVideo = null;
+}
+
+function disposeStopMedia(stop) {
+  for (const m of (stop && stop.media) || []) disposeMedia(m);
+  if (stop) stop.media = [];
+}
+
+function disposeAllMedia() {
+  pauseMediaVideos();
+  for (const s of stops) disposeStopMedia(s);
+}
+
+function removeStopMedia(stopId, mediaId) {
+  const stop = stops.find(s => s.id === stopId);
+  if (!stop) return;
+  const m = (stop.media || []).find(x => x.id === mediaId);
+  if (m) disposeMedia(m);
+  stop.media = (stop.media || []).filter(x => x.id !== mediaId);
+  renderStops();
+  toast(t('mediaRemoved'));
+}
+
+function mediaIntervalMs(stop) {
+  const sec = Number(stop && stop.mediaInterval) || Number(settings.mediaInterval) || 3;
+  return clamp(Math.round(sec * 1000), 800, 15000);
+}
+
+function pauseMediaVideos() {
+  if (activeMediaVideo && activeMediaVideo.video) {
+    try { activeMediaVideo.video.pause(); } catch { /* ignore */ }
+  }
+  activeMediaVideo = null;
+}
+
+function activateMediaVideo(media) {
+  if (!media || !media.video) return;
+  if (activeMediaVideo === media) {
+    if (media.video.paused && media.video.ended) return;
+    if (media.video.paused) media.video.play().catch(() => {});
+    return;
+  }
+  if (activeMediaVideo && activeMediaVideo.video) activeMediaVideo.video.pause();
+  activeMediaVideo = media;
+  try {
+    media.video.currentTime = 0;
+    media.video.play().catch(() => {});
+  } catch { /* autoplay blocked until the next click */ }
+}
+
+function gifFrameAt(media, timeMs) {
+  if (!media.frames || !media.frames.length) return media.img;
+  const total = media.totalDuration || media.frames.reduce((s, f) => s + f.duration, 0) || 1000;
+  let t = ((timeMs % total) + total) % total;
+  for (const f of media.frames) {
+    if (t < f.duration) return f.bitmap;
+    t -= f.duration;
+  }
+  return media.frames[media.frames.length - 1].bitmap;
+}
+
+function needsRealtimeMedia() {
+  return stops.some(s => (s.media || []).some(m =>
+    m.kind === 'video' || m.kind === 'live' || (m.kind === 'gif' && !m.frames)));
+}
+
+
 function esc(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -824,36 +1156,68 @@ function renderStops() {
     const li = document.createElement('li');
     li.className = 'stop';
     li.dataset.id = s.id;
+    const media = s.media || [];
+    const thumb = media[0] ? mediaThumbSrc(media[0]) : '';
+    const interval = Number(s.mediaInterval || settings.mediaInterval || 3);
+    const m = MODES[s.mode] || MODES.plane;
+    const routeKey = m.route === 'osrm' ? (s.mode === 'train' ? 'routeCorridor' : 'routeRoad')
+      : m.route === 'sea' ? 'routeSea' : 'routeAir';
     const legSelect = i === 0 ? '' : `
       <div class="leg">
         <span>${esc(t('via'))}</span>
         <select data-mode="${s.id}">
           ${Object.keys(MODES).map(k => `<option value="${k}" ${s.mode === k ? 'selected' : ''}>${esc(modeLabel(k))}</option>`).join('')}
         </select>
+        <span class="route-note ${routeKey}" title="${esc(t('routeHint'))}">${esc(t(routeKey))}</span>
       </div>`;
+    const mediaStrip = media.length ? `
+      <div class="media-strip">
+        ${media.map(m => `
+          <div class="media-chip ${m.kind}" title="${esc(m.name)}">
+            ${mediaThumbSrc(m) ? `<img src="${esc(mediaThumbSrc(m))}" alt="${esc(t('photoAlt'))}" />` : `<span>${esc(mediaKindLabel(m.kind))}</span>`}
+            <span class="kind">${esc(mediaKindLabel(m.kind))}</span>
+            <button class="del" data-media-del="${s.id}" data-media-id="${m.id}" title="${esc(t('mediaDelete'))}">×</button>
+          </div>`).join('')}
+        <label class="media-interval" title="${esc(t('mediaInterval'))}">${esc(t('mediaIntervalShort'))}
+          <input type="number" min="1" max="15" step="0.5" value="${interval.toFixed(1)}" data-media-interval="${s.id}" />
+          <span class="unit">${LANG === 'zh' ? '秒' : 's'}</span>
+        </label>
+      </div>` : '';
     li.innerHTML = `
       <div class="top">
         <div class="idx" title="${esc(t('tipDrag'))}">${i + 1}</div>
-        ${s.photoUrl ? `<img class="thumb" src="${esc(s.photoUrl)}" alt="${esc(t('photoAlt'))}" />` : ''}
+        ${thumb ? `<img class="thumb" src="${esc(thumb)}" alt="${esc(t('photoAlt'))}" />` : ''}
         <div class="name" data-rename="${s.id}" title="${esc(t('tipRename'))}">${esc(stopLabel(s))}</div>
-        <button class="mini ${s.photoUrl ? 'on' : ''}" data-photo="${s.id}" title="${esc(t('tipPhoto'))}">${svgIcon('camera')}</button>
+        <button class="mini media-btn ${media.length ? 'on' : ''}" data-photo="${s.id}" title="${esc(t('addMedia'))}">${svgIcon('camera')}${media.length ? `<span class="media-count">${media.length}</span>` : ''}</button>
         <button class="mini" data-up="${s.id}" title="${esc(t('tipUp'))}">${svgIcon('up')}</button>
         <button class="mini" data-down="${s.id}" title="${esc(t('tipDown'))}">${svgIcon('down')}</button>
         <button class="mini" data-del="${s.id}" title="${esc(t('tipRemove'))}">${svgIcon('x')}</button>
-      </div>${legSelect}`;
+      </div>${legSelect}${mediaStrip}`;
     ol.appendChild(li);
   });
   $('#stop-count').textContent = stops.length;
 
-  ol.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { stops = stops.filter(s => s.id !== b.dataset.del); afterStopsChange(); });
+  ol.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    const stop = stops.find(s => s.id === b.dataset.del);
+    disposeStopMedia(stop);
+    stops = stops.filter(s => s.id !== b.dataset.del);
+    afterStopsChange();
+  });
   ol.querySelectorAll('[data-up]').forEach(b => b.onclick = () => move(b.dataset.up, -1));
   ol.querySelectorAll('[data-down]').forEach(b => b.onclick = () => move(b.dataset.down, 1));
   ol.querySelectorAll('[data-mode]').forEach(sel => sel.onchange = () => {
-    const s = stops.find(x => x.id === sel.dataset.mode); if (s) { s.mode = sel.value; refreshRoutePreview(); schedulePlaceLayer(); }
+    const s = stops.find(x => x.id === sel.dataset.mode);
+    if (s) { s.mode = sel.value; renderStops(); refreshRoutePreview(); schedulePlaceLayer(); }
   });
   ol.querySelectorAll('[data-photo]').forEach(b => b.onclick = () => {
     photoTargetId = b.dataset.photo;
     $('#file-photo').click();
+  });
+  ol.querySelectorAll('[data-media-del]').forEach(b => b.onclick = () => removeStopMedia(b.dataset.mediaDel, b.dataset.mediaId));
+  ol.querySelectorAll('[data-media-interval]').forEach(inp => inp.onchange = () => {
+    const s = stops.find(x => x.id === inp.dataset.mediaInterval);
+    if (s) s.mediaInterval = clamp(parseFloat(inp.value) || settings.mediaInterval, 1, 15);
+    renderStops();
   });
   ol.querySelectorAll('[data-rename]').forEach(el => el.onclick = () => startRename(el.dataset.rename, el));
 
@@ -987,6 +1351,151 @@ async function reverseName(s) {
   } catch (e) { /* keep coords as name */ }
 }
 
+/* ---- custom places + project config ---- */
+function addCustomPlace() {
+  const name = $('#inp-custom-name').value.trim();
+  const lng = parseFloat(String($('#inp-custom-lng').value).replace(',', '.'));
+  const lat = parseFloat(String($('#inp-custom-lat').value).replace(',', '.'));
+  if (!name || !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+    toast(t('customCoordsInvalid'));
+    return;
+  }
+  const existing = customPlaces.find(p => normalizeQuery(p.name) === normalizeQuery(name)
+    && Math.abs(p.lng - lng) < 1e-5 && Math.abs(p.lat - lat) < 1e-5);
+  if (!existing) {
+    customPlaces.push({ id: id(), name, en: name, pinyin: '', lng, lat, kind: 'custom' });
+    saveCustomPlaces();
+    rebuildPlaceIndex();
+  }
+  addStopAt(lng, lat, name, 'plane', { nameZh: name, nameEn: name });
+  $('#inp-custom-name').value = '';
+  toast(t('customAdded', { name }));
+}
+
+function configPayload() {
+  syncSettingsFromUI();
+  return {
+    schema: 'triptrail',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: {
+      region: settings.region, style: settings.style, aspect: settings.aspect,
+      accent: settings.accent, globe: settings.globe, pitch: settings.pitch,
+      labels: settings.labels, cities: settings.cities, borders: settings.borders,
+      cityLevel: settings.cityLevel, roads: settings.roads, glow: settings.glow,
+      pace: settings.pace, mediaInterval: settings.mediaInterval,
+      title: settings.title, subtitle: settings.subtitle, watermark: settings.watermark,
+      format: settings.format, quality: settings.quality,
+    },
+    stops: stops.map(s => ({
+      name: s.name, nameZh: s.nameZh || '', nameEn: s.nameEn || '',
+      lng: s.lng, lat: s.lat, mode: s.mode || 'plane',
+      mediaInterval: s.mediaInterval || null,
+      mediaMeta: (s.media || []).map(m => ({ kind: m.kind, name: m.name, width: m.width, height: m.height, duration: m.duration || 0 })),
+    })),
+    customPlaces: customPlaces.map(p => ({ name: p.name, lng: p.lng, lat: p.lat })),
+  };
+}
+
+function saveConfigFile() {
+  const data = configPayload();
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `triptrail-${stamp}.triptrail.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(t('configSaved'));
+}
+
+function loadConfigFile(file) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const cfg = JSON.parse(rd.result);
+      if (!cfg || !Array.isArray(cfg.stops)) throw new Error('bad config');
+      if (anim.playing) stopPlay();
+      const s = cfg.settings || {};
+      settings.title = typeof s.title === 'string' ? s.title : t('defaultTitle');
+      settings.subtitle = typeof s.subtitle === 'string' ? s.subtitle : t('defaultSubtitle');
+      settings.accent = /^#[0-9a-f]{6}$/i.test(s.accent || '') ? s.accent : settings.accent;
+      settings.aspect = ['16:9', '9:16', '1:1', '4:5'].includes(s.aspect) ? s.aspect : settings.aspect;
+      settings.region = s.region === 'global' ? 'global' : 'cn';
+      settings.style = typeof s.style === 'string' ? s.style : settings.style;
+      settings.globe = !!s.globe;
+      settings.pitch = !!s.pitch;
+      settings.labels = s.labels !== false;
+      settings.cities = s.cities !== false;
+      settings.borders = s.borders !== false;
+      settings.cityLevel = ['auto', '1', '2', '3'].includes(String(s.cityLevel)) ? String(s.cityLevel) : 'auto';
+      settings.roads = s.roads !== false;
+      settings.glow = s.glow !== false;
+      settings.pace = clamp(Number(s.pace) || 1, 0.4, 2.2);
+      settings.mediaInterval = clamp(Number(s.mediaInterval) || 3, 1, 10);
+      settings.watermark = typeof s.watermark === 'string' ? s.watermark : '';
+      settings.format = s.format === 'webm' ? 'webm' : 'mp4';
+      settings.quality = Number(s.quality) === 2 ? 2 : 1;
+
+      disposeAllMedia();
+      stops = cfg.stops
+        .filter(x => x && Number.isFinite(Number(x.lng)) && Number.isFinite(Number(x.lat)))
+        .slice(0, 100)
+        .map(x => ({
+          id: id(), name: String(x.name || x.nameZh || x.nameEn || `${x.lat}, ${x.lng}`),
+          nameZh: x.nameZh || '', nameEn: x.nameEn || '',
+          lng: Number(x.lng), lat: Number(x.lat), mode: MODES[x.mode] ? x.mode : 'plane',
+          mediaInterval: Number(x.mediaInterval) > 0 ? Number(x.mediaInterval) : null,
+          media: [],
+        }));
+
+      if (Array.isArray(cfg.customPlaces)) {
+        for (const p of cfg.customPlaces) {
+          const n = String(p.name || '').trim();
+          const lng = Number(p.lng), lat = Number(p.lat);
+          if (!n || !Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+          if (customPlaces.some(c => normalizeQuery(c.name) === normalizeQuery(n) && Math.abs(c.lng - lng) < 1e-5 && Math.abs(c.lat - lat) < 1e-5)) continue;
+          customPlaces.push({ id: id(), name: n, en: n, pinyin: '', lng, lat, kind: 'custom' });
+        }
+        saveCustomPlaces();
+        rebuildPlaceIndex();
+      }
+
+      $('#inp-title').value = settings.title;
+      $('#inp-subtitle').value = settings.subtitle;
+      $('#inp-title').dataset.edited = '1';
+      $('#inp-subtitle').dataset.edited = '1';
+      $('#inp-accent').value = settings.accent;
+      document.documentElement.style.setProperty('--accent', settings.accent);
+      $('#rng-pace').value = String(settings.pace);
+      $('#rng-media-interval').value = String(settings.mediaInterval);
+      $('#inp-watermark').value = settings.watermark;
+      $('#sel-aspect').value = settings.aspect;
+      $('#sel-format').value = settings.format;
+      $('#sel-quality').value = String(settings.quality);
+      applyInitialControls();
+      $('#pace-val').textContent = paceLabel();
+      updateMediaIntervalLabel();
+      layoutStage();
+      if (map) {
+        map.setStyle(styleSpec(settings.style), { diff: false });
+        setRegion(settings.region, false);
+        applyProjection();
+        map.easeTo({ pitch: settings.pitch ? 50 : 0, duration: 400 });
+      }
+      afterStopsChange();
+      toast(t('configLoaded', { n: stops.length }));
+      if (cfg.stops.some(x => Array.isArray(x.mediaMeta) && x.mediaMeta.length)) {
+        setTimeout(() => toast(t('configMediaLost'), 4200), 1800);
+      }
+    } catch (e) {
+      console.warn('config load failed', e);
+      toast(t('configInvalid'));
+    }
+  };
+  rd.readAsText(file);
+}
+
 /* ---- offline China place index + online fallback ---- */
 function normalizeQuery(s) {
   return String(s || '')
@@ -1046,16 +1555,20 @@ function nearestLocalPlace(lng, lat, maxKm = 80) {
 
 async function loadChinaData() {
   try {
-    const r = await fetch('data/china-cities.json');
+    const [r, extraR] = await Promise.all([
+      fetch('data/china-cities.json'),
+      fetch('data/china-pois-extra.json').catch(() => null),
+    ]);
     if (!r.ok) throw new Error(String(r.status));
     const j = await r.json();
+    let extra = [];
+    if (extraR && extraR.ok) {
+      try { extra = (await extraR.json()).pois || []; } catch { /* optional file */ }
+    }
     chinaData.cities = Array.isArray(j.cities) ? j.cities : [];
-    chinaData.pois = Array.isArray(j.pois) ? j.pois : [];
-    chinaData.index = [
-      ...chinaData.cities.map(p => ({ ...p, city: p.province })),
-      ...chinaData.pois,
-    ];
+    chinaData.pois = [...(Array.isArray(j.pois) ? j.pois : []), ...extra];
     chinaData.ready = true;
+    rebuildPlaceIndex();
     schedulePlaceLayer();
   } catch (e) {
     chinaData.failed = true;
@@ -1066,6 +1579,7 @@ async function loadChinaData() {
 
 function resultTypeLabel(p) {
   if (p.kind === 'poi') return t('typePoi');
+  if (p.kind === 'custom') return t('typeCustom');
   if (p.kind === 'district') return t('typeDistrict');
   if (p.level === 1) return t('typeCapital');
   if (p.kind === 'city') return t('typeCity');
@@ -1079,10 +1593,14 @@ function resultName(p) {
 
 function resultSub(p) {
   if (p.kind === 'online') return p.address || p.displayName || '';
+  if (p.kind === 'custom') return `${p.lng.toFixed(4)}, ${p.lat.toFixed(4)}`;
   const bits = [];
   const province = LANG === 'en' ? (p.provinceEn || p.province) : p.province;
   if (province && normalizeQuery(province) !== normalizeQuery(resultName(p))) bits.push(province);
-  if (p.kind === 'district') {
+  if (p.kind === 'poi') {
+    if (p.city && p.city !== p.province && normalizeQuery(p.city) !== normalizeQuery(resultName(p))) bits.push(p.city);
+    if (p.address) bits.push(p.address);
+  } else if (p.kind === 'district') {
     const parent = (p.aliases || []).find(a => a && a !== p.province);
     if (parent) bits.push(parent);
   }
@@ -1282,6 +1800,7 @@ async function buildFromText() {
   if (found.length < 2) { toast(t('needTwo')); return; }
 
   let carryMode = 'plane';
+  disposeAllMedia();
   stops = found.map(f => {
     carryMode = f.mode || carryMode;
     return {
@@ -1305,6 +1824,7 @@ function importRouteFile(file) {
       else pts = parseGeoJSON(text);
       if (!pts.length) { toast(t('noUsablePoints')); return; }
       pts = samplePoints(pts, 30);
+      disposeAllMedia();
       stops = pts.map(p => ({ id: id(), name: p.name || `${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}`, lng: p.lng, lat: p.lat, mode: p.mode || 'car' }));
       afterStopsChange();
       stops.filter(s => /^[\d.,\s-]+$/.test(s.name)).slice(0, 5).forEach((s, i) => setTimeout(() => reverseName(s), i * 1100));
@@ -1535,11 +2055,18 @@ function buildTimeline() {
 
   add('intro', clamp(2200 / Math.min(p, 1.2), 1600, 3200), { cam: ov, reached: 1 });
   let prevCam = ov;
+  const addMediaSegment = (stop, cam, reached) => {
+    if (!stop || !stop.media || !stop.media.length) return;
+    const interval = mediaIntervalMs(stop);
+    add('media', interval * stop.media.length, {
+      cam, stop, reached, interval, count: stop.media.length, caption: '',
+    });
+  };
 
-  if (stops[0] && stops[0].img && anim.legs.length) {
+  if (stops[0] && stops[0].media && stops[0].media.length && anim.legs.length) {
     const pc = { center: [stops[0].lng, stops[0].lat], zoom: anim.legs[0].zoom + 0.55, pitch: pitchCruise };
     add('approach', clamp(750 / p, 350, 950), { a: prevCam, b: pc, caption: '', reached: 1 });
-    add('photo', clamp(2100 / p, 1400, 2600), { cam: pc, stop: stops[0], caption: '', reached: 1 });
+    addMediaSegment(stops[0], pc, 1);
     prevCam = pc;
   }
 
@@ -1554,7 +2081,7 @@ function buildTimeline() {
     add('approach', clamp(750 / p, 350, 950), { a: prevCam, b: startCam, caption, reached: i + 1 });
     add('travel', clamp(2200 + leg.dist * 1.1, 2200, 7000) / p, { leg: i, caption, pitchCruise, pitchMax, reached: i + 1 });
     add('arrival', clamp(680 / p, 400, 950), { a: endCam, b: stopCam, leg: i, caption, reached: i + 2 });
-    if (leg.to.img) add('photo', clamp(2100 / p, 1400, 2600), { cam: stopCam, stop: leg.to, caption, reached: i + 2 });
+    addMediaSegment(leg.to, stopCam, i + 2);
     prevCam = stopCam;
   });
 
@@ -1572,6 +2099,11 @@ function paintFrame(tl, tMs) {
 
   anim.pulse = null; anim.photo = null; anim.titleAlpha = 0;
   anim.reached = seg.reached;
+  if (seg.type !== 'media') {
+    pauseMediaVideos();
+    anim.mediaStop = null;
+    anim.mediaElapsed = 0;
+  }
   let cam;
 
   if (seg.type === 'intro') {
@@ -1604,10 +2136,14 @@ function paintFrame(tl, tMs) {
     anim.marker = trailPointAt(leg.pf1); anim.markerMode = leg.modeKey;
     anim.pulse = { lng: leg.to.lng, lat: leg.to.lat, k: easeOutCubic(lt) };
     cam = interpCam(seg.a, seg.b, lt);
-  } else if (seg.type === 'photo') {
-    anim.phase = 'pause'; anim.caption = seg.caption; anim.marker = null;
-    anim.photo = seg.stop.img; anim.photoLabel = stopLabel(seg.stop);
-    anim.photoAlpha = lt < 0.16 ? lt / 0.16 : (lt > 0.86 ? (1 - lt) / 0.14 : 1);
+  } else if (seg.type === 'media') {
+    anim.phase = 'media';
+    anim.caption = '';
+    anim.marker = null;
+    anim.mediaStop = seg.stop;
+    anim.mediaElapsed = lt * (seg.end - seg.start);
+    anim.mediaInterval = seg.interval;
+    anim.mediaCount = seg.count;
     cam = seg.cam;
   } else { // pullback
     anim.phase = 'outro'; anim.caption = ''; anim.marker = null;
@@ -1686,6 +2222,10 @@ async function prepareOfflineAudio(totalMs) {
 }
 
 async function renderOffline(tl, token) {
+  if (needsRealtimeMedia()) {
+    console.warn('realtime media present; using realtime recording for correct motion');
+    return null;
+  }
   let mux;
   try {
     mux = await loadMuxer();
@@ -1818,6 +2358,8 @@ async function play(record) {
   anim.recording = record;
   anim.reached = 0; anim.legIndex = -1; anim.marker = null; anim.heading = null;
   anim.photo = null; anim.photoAlpha = 0; anim.pulse = null; anim._seg = null;
+  anim.mediaStop = null; anim.mediaElapsed = 0;
+  pauseMediaVideos();
   const token = ++cancelToken;
   setControls(true);
 
@@ -1869,7 +2411,9 @@ function endPlay() {
   if (anim.recording) stopRecorder();
   anim.recording = false;
   anim.titleAlpha = 0; anim.caption = ''; anim.photo = null; anim.photoAlpha = 0;
+  anim.mediaStop = null; anim.mediaElapsed = 0;
   anim.pulse = null; anim._seg = null; anim.heading = null;
+  pauseMediaVideos();
   stopMusic();
   map.setPixelRatio(basePixelRatio);
   $('#output').classList.remove('show');
@@ -1953,6 +2497,155 @@ function occludedByGlobe(lng, lat) {
   return haversine([c.lng, c.lat], [lng, lat]) / 6371 > 1.43; // radians (~82°)
 }
 
+function drawMediaContent(ctx, media, x, y, w, h, timeMs) {
+  let src = null;
+  if (media.kind === 'gif') src = gifFrameAt(media, timeMs);
+  else if (media.kind === 'video' || media.kind === 'live') {
+    if (media.video && media.video.readyState >= 2) src = media.video;
+    else if (media.posterImg && media.posterImg.complete) src = media.posterImg;
+  } else if (media.img && media.img.complete) src = media.img;
+  if (!src) src = (media.posterImg && media.posterImg.complete) ? media.posterImg : media.img;
+  ctx.save();
+  ctx.beginPath();
+  roundRect(ctx, x, y, w, h, 5);
+  ctx.clip();
+  if (src) {
+    const sw = src.videoWidth || src.naturalWidth || src.width || media.width || 16;
+    const sh = src.videoHeight || src.naturalHeight || src.height || media.height || 9;
+    const sc = Math.max(w / sw, h / sh);
+    const dw = sw * sc, dh = sh * sc;
+    try { ctx.drawImage(src, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh); }
+    catch { ctx.fillStyle = '#1a2230'; ctx.fillRect(x, y, w, h); }
+  } else {
+    ctx.fillStyle = '#1a2230'; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#9aa8b7'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `600 ${13}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
+    ctx.fillText(mediaKindLabel(media.kind), x + w / 2, y + h / 2);
+  }
+  ctx.restore();
+}
+
+function mediaCardSize(W, H, s) {
+  const maxW = W * 0.46, maxH = H * 0.56;
+  const ar = 1.35;
+  const w = Math.min(maxW, maxH * ar);
+  const h = w / ar;
+  return { w, h, frame: 12 * s, band: 42 * s };
+}
+
+function drawMediaCard(ctx, stop, media, index, total, x, y, w, h, frame, band, alpha, rot, timeMs, primary) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.globalAlpha = clamp(alpha, 0, 1);
+  ctx.shadowColor = 'rgba(0,0,0,.55)';
+  ctx.shadowBlur = 22 * (frame / 12);
+  ctx.shadowOffsetY = 8;
+  ctx.fillStyle = '#fff';
+  roundRect(ctx, -w / 2 - frame, -h / 2 - frame, w + frame * 2, h + frame * 2 + band, 3);
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawMediaContent(ctx, media, -w / 2, -h / 2, w, h, timeMs);
+  if (media.kind !== 'image') {
+    const label = mediaKindLabel(media.kind);
+    const fs = Math.max(9, w * 0.022);
+    ctx.font = `700 ${fs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(6,10,14,.78)';
+    roundRect(ctx, -w / 2 + 7, -h / 2 + 7, tw + 12, fs + 8, 4);
+    ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, -w / 2 + 13, -h / 2 + 7 + (fs + 8) / 2);
+  }
+  const bandY = h / 2 + frame + band / 2 - 2;
+  if (primary) {
+    ctx.fillStyle = '#262626';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    const name = stopLabel(stop);
+    const fs = Math.max(10, band * 0.34);
+    ctx.font = `600 ${fs}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
+    const maxName = w - 74;
+    let shown = name;
+    while (shown.length > 1 && ctx.measureText(shown).width > maxName) shown = shown.slice(0, -1);
+    if (shown !== name) shown = shown.slice(0, -1) + '…';
+    ctx.fillText(shown, -w / 2 + 3, bandY);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#777';
+    ctx.fillText(`${index + 1} / ${total}`, w / 2 - 3, bandY);
+  }
+  ctx.restore();
+}
+
+function stackTransform(depth, s) {
+  const frames = [
+    { dx: 0, dy: 0, scale: 1, rot: -0.025 },
+    { dx: 38 * s, dy: 18 * s, scale: 0.94, rot: 0.06 },
+    { dx: -42 * s, dy: 31 * s, scale: 0.88, rot: -0.09 },
+    { dx: 56 * s, dy: 44 * s, scale: 0.82, rot: 0.12 },
+  ];
+  const d = clamp(depth, 0, frames.length - 1);
+  const i = Math.floor(d), j = Math.min(frames.length - 1, i + 1), t = d - i;
+  const a = frames[i], b = frames[j];
+  return {
+    dx: a.dx + (b.dx - a.dx) * t, dy: a.dy + (b.dy - a.dy) * t,
+    scale: a.scale + (b.scale - a.scale) * t, rot: a.rot + (b.rot - a.rot) * t,
+  };
+}
+
+function drawMediaStack(ctx, W, H, s) {
+  const stop = anim.mediaStop;
+  const stack = (stop && stop.media) || [];
+  const n = stack.length;
+  if (!n) return;
+  const interval = Math.max(1, anim.mediaInterval || 3000);
+  const elapsed = Math.max(0, anim.mediaElapsed || 0);
+  const pos = elapsed / interval;
+  const k = Math.floor(pos) % n;
+  const local = pos - Math.floor(pos);
+  const slotTime = local * interval;
+  const transition = n > 1 ? 0.22 : 0;
+  let incoming = k, outgoing = null, e = 0;
+  if (n > 1 && local > 1 - transition) {
+    outgoing = k;
+    incoming = (k + 1) % n;
+    e = (local - (1 - transition)) / transition;
+  }
+  const topMedia = stack[incoming];
+  if (topMedia && (topMedia.kind === 'video' || topMedia.kind === 'live')) activateMediaVideo(topMedia);
+  else pauseMediaVideos();
+
+  const { w, h, frame, band } = mediaCardSize(W, H, s);
+  const cx = W / 2, cy = H / 2 - 4 * s;
+  const shift = e > 0 ? 1 - e : 0;
+  const order = [];
+  for (let d = 0; d < Math.min(4, n); d++) {
+    const idx = (incoming + d) % n;
+    if (outgoing === idx) continue;
+    order.push({ idx, depth: d });
+  }
+  // The outgoing card fades into the bottom of the pile while a copy slides
+  // off the top; the incoming card rises from depth 1 to depth 0.
+  if (outgoing != null) {
+    const cfg = stackTransform(Math.min(3, n - 1), s);
+    drawMediaCard(ctx, stop, stack[outgoing], outgoing, n, cx + cfg.dx, cy + cfg.dy,
+      w * cfg.scale, h * cfg.scale, frame, band, e * .9, cfg.rot, slotTime, false);
+  }
+  for (let i = order.length - 1; i >= 0; i--) {
+    const item = order[i];
+    const cfg = stackTransform(item.depth + shift, s);
+    drawMediaCard(ctx, stop, stack[item.idx], item.idx, n, cx + cfg.dx, cy + cfg.dy,
+      w * cfg.scale, h * cfg.scale, frame, band, 1, cfg.rot, slotTime, item.idx === incoming);
+  }
+  if (outgoing != null) {
+    const cfg = stackTransform(0, s);
+    drawMediaCard(ctx, stop, stack[outgoing], outgoing, n,
+      cx + cfg.dx + 54 * s * e, cy + cfg.dy + 88 * s * e,
+      w * cfg.scale * (1 - .05 * e), h * cfg.scale * (1 - .05 * e), frame, band,
+      1 - e, cfg.rot + .12 * e, slotTime, false);
+  }
+}
+
 function drawScene(ctx, W, H, dpr) {
   const s = dpr;
   const accent = settings.accent;
@@ -2031,28 +2724,9 @@ function drawScene(ctx, W, H, dpr) {
     ctx.textAlign = 'left';
   }
 
-  // ---- polaroid photo card ----
-  if (anim.photo && anim.photoAlpha > 0.01) {
-    const img = anim.photo, a = anim.photoAlpha;
-    ctx.save();
-    ctx.globalAlpha = a;
-    const maxW = W * 0.46, maxH = H * 0.56;
-    const sc = Math.min(maxW / img.width, maxH / img.height);
-    const w = img.width * sc, h = img.height * sc;
-    const frame = 12 * s, band = 40 * s;
-    ctx.translate(W / 2, H / 2);
-    ctx.rotate(-0.035 + 0.02 * (1 - a));
-    ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 30 * s; ctx.shadowOffsetY = 10 * s;
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(-w / 2 - frame, -h / 2 - frame, w + frame * 2, h + frame * 2 + band);
-    ctx.shadowColor = 'transparent';
-    ctx.drawImage(img, -w / 2, -h / 2, w, h);
-    ctx.fillStyle = '#333';
-    ctx.font = `600 ${16 * s}px "Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(anim.photoLabel || '', 0, h / 2 + frame + band / 2 - 4 * s);
-    ctx.restore();
-    ctx.textAlign = 'left';
+  // ---- stop media stack (images / GIF / video / Live) ----
+  if (anim.phase === 'media' && anim.mediaStop) {
+    drawMediaStack(ctx, W, H, s);
   }
 
   // ---- lower-third caption ----
@@ -2189,6 +2863,7 @@ function syncSettingsFromUI() {
   settings.watermark = $('#inp-watermark').value.trim();
   settings.accent = $('#inp-accent').value;
   settings.pace = parseFloat($('#rng-pace').value);
+  settings.mediaInterval = parseFloat($('#rng-media-interval').value) || 3;
   settings.labels = $('#chk-labels').checked;
   settings.cities = $('#chk-cities').checked;
   settings.borders = $('#chk-borders').checked;
@@ -2206,6 +2881,13 @@ function paceLabel() {
   if (settings.pace < 0.8) return t('paceSlow');
   if (settings.pace > 1.4) return t('paceFast');
   return t('paceNormal');
+}
+
+function updateMediaIntervalLabel() {
+  const el = $('#rng-media-interval');
+  if (!el) return;
+  const n = Number(el.value) || settings.mediaInterval || 3;
+  $('#media-interval-val').textContent = t('mediaIntervalValue', { n: Number(n.toFixed(1)) });
 }
 
 function applyLanguage(initial = false) {
@@ -2245,6 +2927,7 @@ function applyLanguage(initial = false) {
     $('#dl-label').textContent = t('downloadLabel', { ext: lastVideo.ext, size: lastVideo.size });
   }
   $('#pace-val').textContent = paceLabel();
+  updateMediaIntervalLabel();
   updateRegionUI(false);
   renderStops();
   schedulePlaceLayer();
@@ -2310,9 +2993,13 @@ function applyInitialControls() {
   $('#chk-cities').checked = !!settings.cities;
   $('#chk-borders').checked = !!settings.borders;
   $('#chk-labels').checked = !!settings.labels;
+  $('#chk-globe').checked = !!settings.globe;
+  $('#chk-pitch').checked = !!settings.pitch;
   $('#chk-roads').checked = !!settings.roads;
   $('#chk-glow').checked = !!settings.glow;
+  $('#rng-media-interval').value = String(settings.mediaInterval || 3);
   $('#pace-val').textContent = paceLabel();
+  updateMediaIntervalLabel();
   updateRegionUI(false);
 }
 
@@ -2339,7 +3026,15 @@ function wire() {
       else doSearch(true);
     }
   });
-  $('#btn-clear').onclick = () => { stops = []; afterStopsChange(); };
+  $('#btn-clear').onclick = () => { disposeAllMedia(); stops = []; afterStopsChange(); };
+
+  $('#btn-add-custom').onclick = addCustomPlace;
+  $('#btn-save-config').onclick = saveConfigFile;
+  $('#btn-load-config').onclick = () => $('#file-config').click();
+  $('#file-config').onchange = e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (f) loadConfigFile(f);
+  };
 
   $('#btn-lang').onclick = () => {
     LANG = LANG === 'zh' ? 'en' : 'zh';
@@ -2362,13 +3057,11 @@ function wire() {
   $('#inp-subtitle').addEventListener('input', e => { e.target.dataset.edited = '1'; settings.subtitle = e.target.value; });
 
   $('#file-photo').onchange = e => {
-    const f = e.target.files[0]; e.target.value = '';
+    const files = [...e.target.files];
+    e.target.value = '';
     const s = stops.find(x => x.id === photoTargetId);
-    if (!f || !s) return;
-    const url = URL.createObjectURL(f);
-    const img = new Image();
-    img.onload = () => { s.photoUrl = url; s.img = img; renderStops(); toast(t('photoAttached', { name: stopLabel(s) })); };
-    img.src = url;
+    if (!files.length || !s) return;
+    addMediaFiles(s, files);
   };
 
   $('#btn-music').onclick = () => $('#file-music').click();
@@ -2425,6 +3118,10 @@ function wire() {
   $('#rng-pace').oninput = e => {
     settings.pace = parseFloat(e.target.value);
     $('#pace-val').textContent = paceLabel();
+  };
+  $('#rng-media-interval').oninput = e => {
+    settings.mediaInterval = parseFloat(e.target.value);
+    updateMediaIntervalLabel();
   };
   $('#sel-format').onchange = e => settings.format = e.target.value;
   $('#sel-quality').onchange = e => settings.quality = parseInt(e.target.value, 10);

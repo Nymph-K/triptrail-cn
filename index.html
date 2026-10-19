@@ -76,6 +76,17 @@
         </div>
         <p class="hint" data-i18n="stopsHint">也可以点击地图落点。点名称可重命名，拖动序号可调整顺序。</p>
         <p class="local-hint" data-i18n="localSearchHint">中国城市库支持中文、拼音与英文搜索，无需联网。</p>
+        <p class="local-hint" data-i18n="liveHint">Live Photo：同时选择同名的 JPG/PNG 与 MOV/MP4 会自动配成 Live。</p>
+        <details id="custom-place" class="custom-place">
+          <summary data-i18n="customSummary">手动添加自定义地点</summary>
+          <div class="coord-grid">
+            <label class="coord-name"><span data-i18n="customName">地点名称</span><input id="inp-custom-name" type="text" data-i18n-placeholder="customNamePh" /></label>
+            <label><span data-i18n="customLng">经度</span><input id="inp-custom-lng" type="number" min="-180" max="180" step="any" placeholder="116.397" /></label>
+            <label><span data-i18n="customLat">纬度</span><input id="inp-custom-lat" type="number" min="-90" max="90" step="any" placeholder="39.908" /></label>
+          </div>
+          <button id="btn-add-custom" class="btn btn-ghost small" data-i18n="addCustom">添加到行程</button>
+          <p class="hint" data-i18n="customHint">坐标使用十进制度；添加后会同时记入本机常用地点，可在搜索中再次找到。</p>
+        </details>
         <ol id="stops" class="stops"></ol>
         <button id="btn-clear" class="btn btn-ghost small" data-i18n="clearAll">清空全部</button>
       </section>
@@ -95,6 +106,23 @@
           <button id="btn-import" class="btn btn-ghost small">
             <svg class="ic" viewBox="0 0 24 24"><path d="M3 6.5 A1.5 1.5 0 0 1 4.5 5 H9 l2 2.5 h8.5 A1.5 1.5 0 0 1 21 9 V17.5 A1.5 1.5 0 0 1 19.5 19 H4.5 A1.5 1.5 0 0 1 3 17.5 Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             <span data-i18n="importFile">GPX / KML / GeoJSON</span>
+          </button>
+        </div>
+        <p class="hint" data-i18n="routeHint">汽车、大巴、骑行、步行使用 OSRM 真实道路；火车目前沿地面走廊（暂无可靠公共铁路路由），飞机使用大圆航线。</p>
+      </section>
+
+      <!-- Project configuration -->
+      <section class="panel">
+        <h2 data-i18n="projectConfig">项目配置</h2>
+        <p class="hint" data-i18n="configHint">保存/载入标题、途经点坐标、路线方式、地图与媒体设置。图片、GIF、视频文件不写入配置文件。</p>
+        <div class="btnrow">
+          <button id="btn-save-config" class="btn btn-ghost small">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M5 4h11l3 3v13H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 4v6h8V4M8 20v-6h8v6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <span data-i18n="saveConfig">保存配置</span>
+          </button>
+          <button id="btn-load-config" class="btn btn-ghost small">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M4 20h16M12 4v11M7.5 10.5 12 15l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span data-i18n="loadConfig">载入配置</span>
           </button>
         </div>
       </section>
@@ -145,6 +173,10 @@
         <label class="field">
           <span><span data-i18n="pace">节奏</span> <em id="pace-val">标准</em></span>
           <input id="rng-pace" type="range" min="0.4" max="2.2" step="0.1" value="1" />
+        </label>
+        <label class="field">
+          <span><span data-i18n="mediaInterval">媒体停留</span> <em id="media-interval-val">3.0 秒</em></span>
+          <input id="rng-media-interval" type="range" min="1" max="10" step="0.5" value="3" />
         </label>
       </section>
 
@@ -252,10 +284,12 @@
 </div>
 
 <!-- hidden file inputs -->
-<input id="file-photo" type="file" accept="image/*" class="hidden" />
+<input id="file-photo" type="file" accept="image/*,video/*,.heic,.heif,.mov" class="hidden" multiple />
 <input id="file-route" type="file" accept=".gpx,.kml,.geojson,.json" class="hidden" />
 <input id="file-music" type="file" accept="audio/*" class="hidden" />
+<input id="file-config" type="file" accept=".json,.triptrail.json" class="hidden" />
 <audio id="music" loop class="hidden"></audio>
+<div id="media-bin" aria-hidden="true"></div>
 
 <script src="vendor/maplibre/maplibre-gl.js"></script>
 <script src="i18n.js"></script>

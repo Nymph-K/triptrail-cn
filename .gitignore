@@ -3,6 +3,8 @@
 node_modules/
 scripts/node_modules/
 scripts/.tmp/
+test-media/
+app.recovered*.js
 data/CN.zip
 data/geonames/
 data/*.raw.json
