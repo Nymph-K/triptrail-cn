@@ -2606,7 +2606,10 @@ function drawMediaStack(ctx, W, H, s) {
   const slotTime = local * interval;
   const transition = n > 1 ? 0.22 : 0;
   let incoming = k, outgoing = null, e = 0;
-  if (n > 1 && local > 1 - transition) {
+  // Do not wrap the last item back to the first. The final card simply holds
+  // until the timeline leaves this stop and starts the next leg.
+  const isFinalSlot = k === n - 1;
+  if (n > 1 && !isFinalSlot && local > 1 - transition) {
     outgoing = k;
     incoming = (k + 1) % n;
     e = (local - (1 - transition)) / transition;
