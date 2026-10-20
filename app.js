@@ -27,7 +27,7 @@ function savePrefs() {
     localStorage.setItem('triptrail.prefs', JSON.stringify({
       lang: LANG, region: settings.region, style: settings.style,
       cityLevel: settings.cityLevel, cities: settings.cities, borders: settings.borders,
-      mediaInterval: settings.mediaInterval,
+      mediaInterval: settings.mediaInterval, mediaRatio: settings.mediaRatio,
     }));
   } catch { /* private mode */ }
 }
@@ -126,6 +126,7 @@ function stopLabel(s) {
 }
 
 /* ----------------------------- Settings ----------------------------- */
+const MEDIA_RATIOS = ['original', '3:2', '4:3', '16:9', '1:1', '3:4'];
 const settings = {
   region: PREFS.region === 'global' ? 'global' : 'cn',
   style: PREFS.style || 'amap',
@@ -141,6 +142,7 @@ const settings = {
   glow: true,
   pace: 1,
   mediaInterval: clamp(Number(PREFS.mediaInterval) || 3, 1, 10),
+  mediaRatio: MEDIA_RATIOS.includes(PREFS.mediaRatio) ? PREFS.mediaRatio : 'original',
   title: t('defaultTitle'),
   subtitle: t('defaultSubtitle'),
   watermark: '',
@@ -166,6 +168,7 @@ const anim = {
   mediaElapsed: 0,
   mediaInterval: 3000,
   mediaCount: 0,
+  mediaSlots: null,
   pulse: null,            // { lng, lat, start } arrival ripple
   fullCoords: [],
   legs: [],
@@ -991,7 +994,7 @@ async function videoMediaFromFile(file, kind, posterFile) {
   video.playsInline = true;
   video.setAttribute('playsinline', '');
   video.preload = 'auto';
-  video.loop = kind === 'video';
+  video.loop = false;
   document.querySelector('#media-bin').appendChild(video);
   try {
     await waitForVideo(video);
@@ -1107,6 +1110,29 @@ function mediaIntervalMs(stop) {
   return clamp(Math.round(sec * 1000), 800, 15000);
 }
 
+function mediaPlayDurationMs(media) {
+  if (!media) return 0;
+  if (media.kind === 'gif') {
+    return media.totalDuration || (media.frames || []).reduce((s, f) => s + f.duration, 0) || 0;
+  }
+  if (media.kind === 'video' || media.kind === 'live') return media.duration || 0;
+  return 0;
+}
+
+// Each card owns a time slot. Static images use the configured interval. A
+// dynamic item gets at least its own full playback time, plus room for the
+// slide-to-back transition, so a video/GIF is never cut off mid-play.
+function mediaTimingFor(stop) {
+  const interval = mediaIntervalMs(stop);
+  const transition = clamp(Math.round(interval * 0.22), 160, 720);
+  return (stop.media || []).map(m => {
+    const dynamic = m.kind === 'gif' || m.kind === 'video' || m.kind === 'live';
+    const play = dynamic ? mediaPlayDurationMs(m) : 0;
+    const duration = dynamic ? Math.max(interval, play + transition) : interval;
+    return { duration, transition: Math.min(transition, Math.round(duration * 0.4)) };
+  });
+}
+
 function pauseMediaVideos() {
   if (activeMediaVideo && activeMediaVideo.video) {
     try { activeMediaVideo.video.pause(); } catch { /* ignore */ }
@@ -1129,10 +1155,11 @@ function activateMediaVideo(media) {
   } catch { /* autoplay blocked until the next click */ }
 }
 
-function gifFrameAt(media, timeMs) {
+function gifFrameAt(media, timeMs, loop = false) {
   if (!media.frames || !media.frames.length) return media.img;
   const total = media.totalDuration || media.frames.reduce((s, f) => s + f.duration, 0) || 1000;
-  let t = ((timeMs % total) + total) % total;
+  if (!loop && timeMs >= total) return media.frames[media.frames.length - 1].bitmap;
+  let t = loop ? ((timeMs % total) + total) % total : Math.max(0, timeMs);
   for (const f of media.frames) {
     if (t < f.duration) return f.bitmap;
     t -= f.duration;
@@ -1383,7 +1410,7 @@ function configPayload() {
       accent: settings.accent, globe: settings.globe, pitch: settings.pitch,
       labels: settings.labels, cities: settings.cities, borders: settings.borders,
       cityLevel: settings.cityLevel, roads: settings.roads, glow: settings.glow,
-      pace: settings.pace, mediaInterval: settings.mediaInterval,
+      pace: settings.pace, mediaInterval: settings.mediaInterval, mediaRatio: settings.mediaRatio,
       title: settings.title, subtitle: settings.subtitle, watermark: settings.watermark,
       format: settings.format, quality: settings.quality,
     },
@@ -1433,6 +1460,7 @@ function loadConfigFile(file) {
       settings.glow = s.glow !== false;
       settings.pace = clamp(Number(s.pace) || 1, 0.4, 2.2);
       settings.mediaInterval = clamp(Number(s.mediaInterval) || 3, 1, 10);
+      settings.mediaRatio = MEDIA_RATIOS.includes(s.mediaRatio) ? s.mediaRatio : 'original';
       settings.watermark = typeof s.watermark === 'string' ? s.watermark : '';
       settings.format = s.format === 'webm' ? 'webm' : 'mp4';
       settings.quality = Number(s.quality) === 2 ? 2 : 1;
@@ -1469,6 +1497,7 @@ function loadConfigFile(file) {
       document.documentElement.style.setProperty('--accent', settings.accent);
       $('#rng-pace').value = String(settings.pace);
       $('#rng-media-interval').value = String(settings.mediaInterval);
+      $('#sel-media-ratio').value = settings.mediaRatio;
       $('#inp-watermark').value = settings.watermark;
       $('#sel-aspect').value = settings.aspect;
       $('#sel-format').value = settings.format;
@@ -2058,8 +2087,10 @@ function buildTimeline() {
   const addMediaSegment = (stop, cam, reached) => {
     if (!stop || !stop.media || !stop.media.length) return;
     const interval = mediaIntervalMs(stop);
-    add('media', interval * stop.media.length, {
-      cam, stop, reached, interval, count: stop.media.length, caption: '',
+    const slots = mediaTimingFor(stop);
+    const duration = slots.reduce((sum, s) => sum + s.duration, 0);
+    add('media', duration, {
+      cam, stop, reached, interval, count: stop.media.length, slots, caption: '',
     });
   };
 
@@ -2103,6 +2134,7 @@ function paintFrame(tl, tMs) {
     pauseMediaVideos();
     anim.mediaStop = null;
     anim.mediaElapsed = 0;
+    anim.mediaSlots = null;
   }
   let cam;
 
@@ -2144,6 +2176,7 @@ function paintFrame(tl, tMs) {
     anim.mediaElapsed = lt * (seg.end - seg.start);
     anim.mediaInterval = seg.interval;
     anim.mediaCount = seg.count;
+    anim.mediaSlots = seg.slots || null;
     cam = seg.cam;
   } else { // pullback
     anim.phase = 'outro'; anim.caption = ''; anim.marker = null;
@@ -2358,7 +2391,7 @@ async function play(record) {
   anim.recording = record;
   anim.reached = 0; anim.legIndex = -1; anim.marker = null; anim.heading = null;
   anim.photo = null; anim.photoAlpha = 0; anim.pulse = null; anim._seg = null;
-  anim.mediaStop = null; anim.mediaElapsed = 0;
+  anim.mediaStop = null; anim.mediaElapsed = 0; anim.mediaSlots = null;
   pauseMediaVideos();
   const token = ++cancelToken;
   setControls(true);
@@ -2411,7 +2444,7 @@ function endPlay() {
   if (anim.recording) stopRecorder();
   anim.recording = false;
   anim.titleAlpha = 0; anim.caption = ''; anim.photo = null; anim.photoAlpha = 0;
-  anim.mediaStop = null; anim.mediaElapsed = 0;
+  anim.mediaStop = null; anim.mediaElapsed = 0; anim.mediaSlots = null;
   anim.pulse = null; anim._seg = null; anim.heading = null;
   pauseMediaVideos();
   stopMusic();
@@ -2525,9 +2558,16 @@ function drawMediaContent(ctx, media, x, y, w, h, timeMs) {
   ctx.restore();
 }
 
-function mediaCardSize(W, H, s) {
+function mediaCardGeometry(media, W, H, s) {
   const maxW = W * 0.46, maxH = H * 0.56;
-  const ar = 1.35;
+  let ar;
+  if (settings.mediaRatio === 'original') {
+    ar = (media.width || 1.4) / Math.max(1, media.height || 1);
+    ar = clamp(ar, 0.5, 2.25);
+  } else {
+    const [a, b] = String(settings.mediaRatio).split(':').map(Number);
+    ar = a > 0 && b > 0 ? a / b : 1.35;
+  }
   const w = Math.min(maxW, maxH * ar);
   const h = w / ar;
   return { w, h, frame: 12 * s, band: 42 * s };
@@ -2600,16 +2640,28 @@ function drawMediaStack(ctx, W, H, s) {
   if (!n) return;
   const interval = Math.max(1, anim.mediaInterval || 3000);
   const elapsed = Math.max(0, anim.mediaElapsed || 0);
-  const pos = elapsed / interval;
-  const k = Math.floor(pos) % n;
-  const local = pos - Math.floor(pos);
-  const slotTime = local * interval;
-  const transition = n > 1 ? 0.22 : 0;
+  const fallbackTransition = clamp(Math.round(interval * 0.22), 160, 720);
+  const slots = (anim.mediaSlots && anim.mediaSlots.length === n)
+    ? anim.mediaSlots
+    : stack.map(() => ({ duration: interval, transition: fallbackTransition }));
+  let k = 0, local = 0, slot = slots[0], acc = 0;
+  for (let i = 0; i < n; i++) {
+    const dur = Math.max(1, slots[i].duration || interval);
+    if (elapsed < acc + dur || i === n - 1) {
+      k = i;
+      local = clamp((elapsed - acc) / dur, 0, 1);
+      slot = slots[i];
+      break;
+    }
+    acc += dur;
+  }
+  const slotTime = local * Math.max(1, slot.duration || interval);
+  const transition = clamp((slot.transition || fallbackTransition) / Math.max(1, slot.duration || interval), 0, 0.4);
   let incoming = k, outgoing = null, e = 0;
   // Do not wrap the last item back to the first. The final card simply holds
   // until the timeline leaves this stop and starts the next leg.
   const isFinalSlot = k === n - 1;
-  if (n > 1 && !isFinalSlot && local > 1 - transition) {
+  if (n > 1 && !isFinalSlot && transition > 0 && local > 1 - transition) {
     outgoing = k;
     incoming = (k + 1) % n;
     e = (local - (1 - transition)) / transition;
@@ -2618,8 +2670,8 @@ function drawMediaStack(ctx, W, H, s) {
   if (topMedia && (topMedia.kind === 'video' || topMedia.kind === 'live')) activateMediaVideo(topMedia);
   else pauseMediaVideos();
 
-  const { w, h, frame, band } = mediaCardSize(W, H, s);
   const cx = W / 2, cy = H / 2 - 4 * s;
+  const geometry = idx => mediaCardGeometry(stack[idx], W, H, s);
   const shift = e > 0 ? 1 - e : 0;
   const order = [];
   for (let d = 0; d < Math.min(4, n); d++) {
@@ -2631,20 +2683,23 @@ function drawMediaStack(ctx, W, H, s) {
   // off the top; the incoming card rises from depth 1 to depth 0.
   if (outgoing != null) {
     const cfg = stackTransform(Math.min(3, n - 1), s);
+    const g = geometry(outgoing);
     drawMediaCard(ctx, stop, stack[outgoing], outgoing, n, cx + cfg.dx, cy + cfg.dy,
-      w * cfg.scale, h * cfg.scale, frame, band, e * .9, cfg.rot, slotTime, false);
+      g.w * cfg.scale, g.h * cfg.scale, g.frame, g.band, e * .9, cfg.rot, slotTime, false);
   }
   for (let i = order.length - 1; i >= 0; i--) {
     const item = order[i];
     const cfg = stackTransform(item.depth + shift, s);
+    const g = geometry(item.idx);
     drawMediaCard(ctx, stop, stack[item.idx], item.idx, n, cx + cfg.dx, cy + cfg.dy,
-      w * cfg.scale, h * cfg.scale, frame, band, 1, cfg.rot, slotTime, item.idx === incoming);
+      g.w * cfg.scale, g.h * cfg.scale, g.frame, g.band, 1, cfg.rot, slotTime, item.idx === incoming);
   }
   if (outgoing != null) {
     const cfg = stackTransform(0, s);
+    const g = geometry(outgoing);
     drawMediaCard(ctx, stop, stack[outgoing], outgoing, n,
       cx + cfg.dx + 54 * s * e, cy + cfg.dy + 88 * s * e,
-      w * cfg.scale * (1 - .05 * e), h * cfg.scale * (1 - .05 * e), frame, band,
+      g.w * cfg.scale * (1 - .05 * e), g.h * cfg.scale * (1 - .05 * e), g.frame, g.band,
       1 - e, cfg.rot + .12 * e, slotTime, false);
   }
 }
@@ -2867,6 +2922,7 @@ function syncSettingsFromUI() {
   settings.accent = $('#inp-accent').value;
   settings.pace = parseFloat($('#rng-pace').value);
   settings.mediaInterval = parseFloat($('#rng-media-interval').value) || 3;
+  settings.mediaRatio = MEDIA_RATIOS.includes($('#sel-media-ratio').value) ? $('#sel-media-ratio').value : 'original';
   settings.labels = $('#chk-labels').checked;
   settings.cities = $('#chk-cities').checked;
   settings.borders = $('#chk-borders').checked;
@@ -3001,6 +3057,7 @@ function applyInitialControls() {
   $('#chk-roads').checked = !!settings.roads;
   $('#chk-glow').checked = !!settings.glow;
   $('#rng-media-interval').value = String(settings.mediaInterval || 3);
+  $('#sel-media-ratio').value = settings.mediaRatio;
   $('#pace-val').textContent = paceLabel();
   updateMediaIntervalLabel();
   updateRegionUI(false);
@@ -3125,6 +3182,10 @@ function wire() {
   $('#rng-media-interval').oninput = e => {
     settings.mediaInterval = parseFloat(e.target.value);
     updateMediaIntervalLabel();
+  };
+  $('#sel-media-ratio').onchange = e => {
+    settings.mediaRatio = MEDIA_RATIOS.includes(e.target.value) ? e.target.value : 'original';
+    savePrefs();
   };
   $('#sel-format').onchange = e => settings.format = e.target.value;
   $('#sel-quality').onchange = e => settings.quality = parseInt(e.target.value, 10);

@@ -178,6 +178,17 @@
           <span><span data-i18n="mediaInterval">媒体停留</span> <em id="media-interval-val">3.0 秒</em></span>
           <input id="rng-media-interval" type="range" min="1" max="10" step="0.5" value="3" />
         </label>
+        <label class="field">
+          <span data-i18n="mediaRatio">媒体画面比例</span>
+          <select id="sel-media-ratio">
+            <option value="original" data-i18n="mediaRatioOriginal">原始比例（每张独立）</option>
+            <option value="3:2" data-i18n="mediaRatio32">统一 3:2</option>
+            <option value="4:3" data-i18n="mediaRatio43">统一 4:3</option>
+            <option value="16:9" data-i18n="mediaRatio169">统一 16:9</option>
+            <option value="1:1" data-i18n="mediaRatio11">统一 1:1</option>
+            <option value="3:4" data-i18n="mediaRatio34">统一 3:4 竖版</option>
+          </select>
+        </label>
       </section>
 
       <!-- China display -->
