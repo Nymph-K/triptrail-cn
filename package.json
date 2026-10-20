@@ -1,6 +1,6 @@
 {
   "name": "triptrail-cn",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "TripTrail with a Chinese-first UI, China map mode, offline city index and tiered city labels.",

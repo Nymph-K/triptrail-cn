@@ -189,9 +189,14 @@ const CHINA_BOUNDS = [[73, 3], [136, 54]];
 let customPlaces = (() => {
   try {
     const arr = JSON.parse(localStorage.getItem('triptrail.customPlaces') || '[]');
-    return Array.isArray(arr) ? arr.filter(p => p && p.name && Number.isFinite(p.lng) && Number.isFinite(p.lat)) : [];
+    return Array.isArray(arr)
+      ? arr
+        .filter(p => p && p.name && Number.isFinite(Number(p.lng)) && Number.isFinite(Number(p.lat)))
+        .map(p => ({ id: p.id || id(), name: String(p.name), en: p.en || String(p.name), pinyin: p.pinyin || '', lng: Number(p.lng), lat: Number(p.lat), kind: 'custom' }))
+      : [];
   } catch { return []; }
 })();
+let editingCustomId = null;
 
 function saveCustomPlaces() {
   try { localStorage.setItem('triptrail.customPlaces', JSON.stringify(customPlaces)); } catch { /* private mode */ }
@@ -1346,6 +1351,7 @@ function addStopAt(lng, lat, name, mode, extra = {}) {
   if (extra.nameEn) s.nameEn = extra.nameEn;
   if (extra.province) s.province = extra.province;
   if (extra.pinyin) s.pinyin = extra.pinyin;
+  if (extra.customId) s.customId = extra.customId;
   stops.push(s);
   afterStopsChange();
   if (!name) reverseName(s);
@@ -1378,25 +1384,178 @@ async function reverseName(s) {
   } catch (e) { /* keep coords as name */ }
 }
 
-/* ---- custom places + project config ---- */
-function addCustomPlace() {
+/* ---- custom places CRUD + plaintext JSON ---- */
+function normalizeCustomPlace(raw) {
+  if (!raw) return null;
+  const name = String(raw.name || '').trim();
+  const lng = Number(raw.lng);
+  const lat = Number(raw.lat);
+  if (!name || !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) return null;
+  return { id: id(), name, en: name, pinyin: '', lng, lat, kind: 'custom' };
+}
+
+function readCustomForm() {
   const name = $('#inp-custom-name').value.trim();
   const lng = parseFloat(String($('#inp-custom-lng').value).replace(',', '.'));
   const lat = parseFloat(String($('#inp-custom-lat').value).replace(',', '.'));
   if (!name || !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) {
     toast(t('customCoordsInvalid'));
+    return null;
+  }
+  return { name, lng, lat };
+}
+
+function renderCustomPlaces() {
+  const box = $('#custom-list');
+  if (!box) return;
+  if (editingCustomId && !customPlaces.some(p => p.id === editingCustomId)) editingCustomId = null;
+  $('#custom-count').textContent = customPlaces.length;
+  if (!customPlaces.length) {
+    box.innerHTML = `<div class="custom-empty">${esc(t('customEmpty'))}</div>`;
+  } else {
+    box.innerHTML = customPlaces.map(p => `
+      <div class="custom-row ${p.id === editingCustomId ? 'editing' : ''}">
+        <div class="meta">
+          <div class="nm">${esc(p.name)}</div>
+          <div class="co">${Number(p.lng).toFixed(5)}, ${Number(p.lat).toFixed(5)}</div>
+        </div>
+        <button data-custom-edit="${p.id}">${esc(t('customEdit'))}</button>
+        <button class="del" data-custom-del="${p.id}">${esc(t('customDelete'))}</button>
+      </div>`).join('');
+  }
+  box.querySelectorAll('[data-custom-edit]').forEach(b => b.onclick = () => beginEditCustom(b.dataset.customEdit));
+  box.querySelectorAll('[data-custom-del]').forEach(b => b.onclick = () => deleteCustomPlace(b.dataset.customDel));
+  const btn = $('#btn-add-custom');
+  if (btn) btn.textContent = editingCustomId ? t('customUpdate') : t('addCustom');
+  const cancel = $('#btn-cancel-custom');
+  if (cancel) cancel.classList.toggle('hidden', !editingCustomId);
+}
+
+function beginEditCustom(customId) {
+  const p = customPlaces.find(x => x.id === customId);
+  if (!p) return;
+  editingCustomId = customId;
+  $('#custom-place').open = true;
+  $('#inp-custom-name').value = p.name;
+  $('#inp-custom-lng').value = p.lng;
+  $('#inp-custom-lat').value = p.lat;
+  renderCustomPlaces();
+  $('#inp-custom-name').focus();
+  $('#custom-place').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function resetCustomEditor() {
+  editingCustomId = null;
+  $('#inp-custom-name').value = '';
+  $('#inp-custom-lng').value = '';
+  $('#inp-custom-lat').value = '';
+  renderCustomPlaces();
+}
+
+function submitCustomPlace() {
+  const v = readCustomForm();
+  if (!v) return;
+  if (editingCustomId) {
+    const place = customPlaces.find(p => p.id === editingCustomId);
+    if (!place) { resetCustomEditor(); return; }
+    place.name = v.name; place.en = v.name; place.lng = v.lng; place.lat = v.lat;
+    saveCustomPlaces();
+    rebuildPlaceIndex();
+    let moved = false;
+    for (const s of stops) {
+      if (s.customId === editingCustomId) {
+        s.name = v.name; s.nameZh = v.name; s.nameEn = v.name;
+        s.lng = v.lng; s.lat = v.lat;
+        moved = true;
+      }
+    }
+    if (moved) afterStopsChange(); else renderStops();
+    resetCustomEditor();
+    toast(t('customUpdated', { name: v.name }));
     return;
   }
-  const existing = customPlaces.find(p => normalizeQuery(p.name) === normalizeQuery(name)
-    && Math.abs(p.lng - lng) < 1e-5 && Math.abs(p.lat - lat) < 1e-5);
-  if (!existing) {
-    customPlaces.push({ id: id(), name, en: name, pinyin: '', lng, lat, kind: 'custom' });
+  let place = customPlaces.find(p => normalizeQuery(p.name) === normalizeQuery(v.name)
+    && Math.abs(p.lng - v.lng) < 1e-5 && Math.abs(p.lat - v.lat) < 1e-5);
+  if (!place) {
+    place = { id: id(), name: v.name, en: v.name, pinyin: '', lng: v.lng, lat: v.lat, kind: 'custom' };
+    customPlaces.push(place);
     saveCustomPlaces();
     rebuildPlaceIndex();
   }
-  addStopAt(lng, lat, name, 'plane', { nameZh: name, nameEn: name });
+  addStopAt(v.lng, v.lat, v.name, 'plane', { nameZh: v.name, nameEn: v.name, customId: place.id });
   $('#inp-custom-name').value = '';
-  toast(t('customAdded', { name }));
+  renderCustomPlaces();
+  toast(t('customAdded', { name: v.name }));
+}
+
+function deleteCustomPlace(customId) {
+  const p = customPlaces.find(x => x.id === customId);
+  if (!p) return;
+  customPlaces = customPlaces.filter(x => x.id !== customId);
+  for (const s of stops) if (s.customId === customId) delete s.customId;
+  saveCustomPlaces();
+  rebuildPlaceIndex();
+  if (editingCustomId === customId) resetCustomEditor(); else renderCustomPlaces();
+  renderStops();
+  toast(t('customDeleted', { name: p.name }));
+}
+
+function customPlacesFileData() {
+  return {
+    schema: 'triptrail.customPlaces',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    places: customPlaces.map(p => ({
+      name: p.name,
+      lng: Number(Number(p.lng).toFixed(6)),
+      lat: Number(Number(p.lat).toFixed(6)),
+    })),
+  };
+}
+
+function saveCustomPlacesFile() {
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
+  const blob = new Blob([JSON.stringify(customPlacesFileData(), null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `triptrail-custom-places-${stamp}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(t('customSaved'));
+}
+
+function loadCustomPlacesFile(file) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const data = JSON.parse(String(rd.result).replace(/^\uFEFF/, ''));
+      const arr = Array.isArray(data) ? data : (data && Array.isArray(data.places) ? data.places : null);
+      if (!arr) throw new Error('bad custom places file');
+      const incoming = arr.map(normalizeCustomPlace).filter(Boolean);
+      if (arr.length && !incoming.length) throw new Error('no valid places');
+      if ($('#chk-custom-replace').checked) {
+        customPlaces = incoming;
+        const ids = new Set(customPlaces.map(p => p.id));
+        for (const s of stops) {
+          if (s.customId && !ids.has(s.customId)) delete s.customId;
+        }
+      } else {
+        for (const p of incoming) {
+          if (!customPlaces.some(c => normalizeQuery(c.name) === normalizeQuery(p.name)
+            && Math.abs(c.lng - p.lng) < 1e-5 && Math.abs(c.lat - p.lat) < 1e-5)) customPlaces.push(p);
+        }
+      }
+      saveCustomPlaces();
+      rebuildPlaceIndex();
+      renderCustomPlaces();
+      toast(t('customLoaded', { n: incoming.length }));
+    } catch (e) {
+      console.warn('custom places load failed', e);
+      toast(t('customInvalid'));
+    }
+  };
+  rd.onerror = () => toast(t('customInvalid'));
+  rd.readAsText(file);
 }
 
 function configPayload() {
@@ -1440,7 +1599,7 @@ function loadConfigFile(file) {
   const rd = new FileReader();
   rd.onload = () => {
     try {
-      const cfg = JSON.parse(rd.result);
+      const cfg = JSON.parse(String(rd.result).replace(/^\uFEFF/, ''));
       if (!cfg || !Array.isArray(cfg.stops)) throw new Error('bad config');
       if (anim.playing) stopPlay();
       const s = cfg.settings || {};
@@ -1487,6 +1646,7 @@ function loadConfigFile(file) {
         }
         saveCustomPlaces();
         rebuildPlaceIndex();
+        renderCustomPlaces();
       }
 
       $('#inp-title').value = settings.title;
@@ -2989,6 +3149,7 @@ function applyLanguage(initial = false) {
   updateMediaIntervalLabel();
   updateRegionUI(false);
   renderStops();
+  renderCustomPlaces();
   schedulePlaceLayer();
 }
 
@@ -3088,7 +3249,14 @@ function wire() {
   });
   $('#btn-clear').onclick = () => { disposeAllMedia(); stops = []; afterStopsChange(); };
 
-  $('#btn-add-custom').onclick = addCustomPlace;
+  $('#btn-add-custom').onclick = submitCustomPlace;
+  $('#btn-cancel-custom').onclick = resetCustomEditor;
+  $('#btn-save-custom').onclick = saveCustomPlacesFile;
+  $('#btn-load-custom').onclick = () => $('#file-custom').click();
+  $('#file-custom').onchange = e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (f) loadCustomPlacesFile(f);
+  };
   $('#btn-save-config').onclick = saveConfigFile;
   $('#btn-load-config').onclick = () => $('#file-config').click();
   $('#file-config').onchange = e => {

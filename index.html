@@ -84,8 +84,21 @@
             <label><span data-i18n="customLng">经度</span><input id="inp-custom-lng" type="number" min="-180" max="180" step="any" placeholder="116.397" /></label>
             <label><span data-i18n="customLat">纬度</span><input id="inp-custom-lat" type="number" min="-90" max="90" step="any" placeholder="39.908" /></label>
           </div>
-          <button id="btn-add-custom" class="btn btn-ghost small" data-i18n="addCustom">添加到行程</button>
+          <div class="custom-actions">
+            <button id="btn-add-custom" class="btn btn-ghost small" data-i18n="addCustom">添加到行程</button>
+            <button id="btn-cancel-custom" class="btn btn-ghost small hidden" data-i18n="customCancel">取消编辑</button>
+          </div>
           <p class="hint" data-i18n="customHint">坐标使用十进制度；添加后会同时记入本机常用地点，可在搜索中再次找到。</p>
+          <div class="custom-list-head">
+            <span data-i18n="customList">常用地点</span>
+            <span id="custom-count" class="badge">0</span>
+          </div>
+          <div id="custom-list" class="custom-list"></div>
+          <div class="btnrow custom-io">
+            <button id="btn-save-custom" class="btn btn-ghost small" data-i18n="customSaveJson">保存地点 JSON</button>
+            <button id="btn-load-custom" class="btn btn-ghost small" data-i18n="customLoadJson">加载地点 JSON</button>
+          </div>
+          <label class="check custom-replace"><input id="chk-custom-replace" type="checkbox" /> <span data-i18n="customReplace">加载时覆盖现有列表</span></label>
         </details>
         <ol id="stops" class="stops"></ol>
         <button id="btn-clear" class="btn btn-ghost small" data-i18n="clearAll">清空全部</button>
@@ -299,6 +312,7 @@
 <input id="file-route" type="file" accept=".gpx,.kml,.geojson,.json" class="hidden" />
 <input id="file-music" type="file" accept="audio/*" class="hidden" />
 <input id="file-config" type="file" accept=".json,.triptrail.json" class="hidden" />
+<input id="file-custom" type="file" accept=".json,application/json" class="hidden" />
 <audio id="music" loop class="hidden"></audio>
 <div id="media-bin" aria-hidden="true"></div>
 
