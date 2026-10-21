@@ -1255,8 +1255,11 @@ async function createIconFromFile(file) {
     kind, name: file.name, dataUrl, img,
   });
   if (kind === 'gif') {
-    const decoded = await decodeGifFrames(file);
-    if (decoded) { icon.frames = decoded.frames; icon.totalDuration = decoded.total; }
+    // Show the GIF immediately via <img>; decode frames in the background so
+    // a slow/large GIF can never block the upload or hide the icon.
+    decodeGifFrames(file).then(decoded => {
+      if (decoded) { icon.frames = decoded.frames; icon.totalDuration = decoded.total; }
+    }).catch(err => console.warn('GIF icon decode failed, using animated image:', err));
   }
   return icon;
 }
@@ -1292,10 +1295,24 @@ function customIconTransform(icon, leg, heading) {
   const dir = legDirectionInfo(leg);
   let flip = false, rotation = 0;
   if (!icon) return { flip, rotation };
+  const h = Number.isFinite(heading) ? heading : dir.bearing;
   if (icon.rotate) {
-    const base = icon.baseFacing === 'right' ? 90 : icon.baseFacing === 'left' ? -90 : 0;
-    const h = Number.isFinite(heading) ? heading : dir.bearing;
-    rotation = ((h - base + 540) % 360) - 180;
+    if (icon.baseFacing === 'up') {
+      rotation = h;
+    } else {
+      // Side-view art is mirrored into the east/west half instead of being
+      // rotated 180° (which would make a left-facing car go upside down).
+      // The remaining tangent angle stays within ±90°.
+      const eastHalf = Math.sin(h * Math.PI / 180) >= 0;
+      if (icon.baseFacing === 'right') {
+        flip = !eastHalf;
+        rotation = h - (flip ? 270 : 90);
+      } else {
+        flip = eastHalf;
+        rotation = h - (flip ? 90 : 270);
+      }
+    }
+    rotation = ((rotation + 540) % 360) - 180;
   } else if (icon.autoFlip && dir.eastWest) {
     if (icon.baseFacing === 'right' && !dir.east) flip = true;
     if (icon.baseFacing === 'left' && dir.east) flip = true;
@@ -1312,6 +1329,7 @@ function esc(str) {
 function legIconControls(s) {
   const icon = s.icon;
   const disabled = icon ? '' : 'disabled';
+  const autoDisabled = !icon || (icon && icon.rotate) ? 'disabled' : '';
   const size = icon ? clamp(Number(icon.size) || 48, 16, 140) : 48;
   const facing = icon ? icon.baseFacing : 'right';
   const emoji = icon && icon.kind === 'emoji' ? icon.emoji : '';
@@ -1342,7 +1360,7 @@ function legIconControls(s) {
           </label>
         </div>
         <div class="icon-row checks">
-          <label class="check"><input type="checkbox" data-icon-flip="${s.id}" ${icon && icon.autoFlip !== false ? 'checked' : ''} ${disabled} />${esc(t('iconAutoFlip'))}</label>
+          <label class="check"><input type="checkbox" data-icon-flip="${s.id}" ${icon && icon.autoFlip !== false ? 'checked' : ''} ${autoDisabled} />${esc(t('iconAutoFlip'))}</label>
           <label class="check"><input type="checkbox" data-icon-rotate="${s.id}" ${icon && icon.rotate ? 'checked' : ''} ${disabled} />${esc(t('iconRotate'))}</label>
         </div>
         <p class="hint">${esc(t('iconHint'))}</p>
@@ -1452,7 +1470,7 @@ function renderStops() {
   });
   ol.querySelectorAll('[data-icon-rotate]').forEach(chk => chk.onchange = () => {
     const s = stops.find(x => x.id === chk.dataset.iconRotate);
-    if (s && s.icon) s.icon.rotate = chk.checked;
+    if (s && s.icon) { s.icon.rotate = chk.checked; renderStops(); }
   });
   ol.querySelectorAll('[data-rename]').forEach(el => el.onclick = () => startRename(el.dataset.rename, el));
 
