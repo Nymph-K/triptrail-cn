@@ -169,6 +169,7 @@ const anim = {
   mediaInterval: 3000,
   mediaCount: 0,
   mediaSlots: null,
+  clockMs: 0,
   pulse: null,            // { lng, lat, start } arrival ripple
   fullCoords: [],
   legs: [],
@@ -185,6 +186,7 @@ let placeRaf = 0;
 let musicFileName = '';
 let lastVideo = null;
 let activeMediaVideo = null;
+let iconTargetId = null;
 const CHINA_BOUNDS = [[73, 3], [136, 54]];
 let customPlaces = (() => {
   try {
@@ -1173,13 +1175,179 @@ function gifFrameAt(media, timeMs, loop = false) {
 }
 
 function needsRealtimeMedia() {
-  return stops.some(s => (s.media || []).some(m =>
-    m.kind === 'video' || m.kind === 'live' || (m.kind === 'gif' && !m.frames)));
+  return stops.some(s =>
+    (s.media || []).some(m =>
+      m.kind === 'video' || m.kind === 'live' || (m.kind === 'gif' && !m.frames))
+    || (s.icon && s.icon.kind === 'gif' && !s.icon.frames));
 }
+
+/* ============================================================ per-leg custom vehicle icons */
+const ICON_FACINGS = new Set(['right', 'left', 'up']);
+
+function defaultIconConfig(extra = {}) {
+  return {
+    kind: 'image', name: '', dataUrl: '', emoji: '',
+    img: null, frames: null, totalDuration: 0,
+    size: 48, baseFacing: 'right', autoFlip: true, rotate: false,
+    ...extra,
+  };
+}
+
+function iconPreviewHtml(icon) {
+  if (!icon) return `<span class="icon-none">${esc(t('iconDefault'))}</span>`;
+  if (icon.kind === 'emoji') return `<span class="icon-emoji">${esc(icon.emoji)}</span>`;
+  const src = icon.dataUrl || (icon.img && icon.img.src) || '';
+  return src ? `<img src="${esc(src)}" alt="${esc(t('iconPreview'))}" />` : `<span class="icon-none">${esc(t('iconDefault'))}</span>`;
+}
+
+function serializeIcon(icon) {
+  if (!icon) return null;
+  return {
+    kind: icon.kind, name: icon.name || '', emoji: icon.emoji || '',
+    dataUrl: icon.dataUrl || '', size: clamp(Number(icon.size) || 48, 16, 140),
+    baseFacing: ICON_FACINGS.has(icon.baseFacing) ? icon.baseFacing : 'right',
+    autoFlip: icon.autoFlip !== false, rotate: !!icon.rotate,
+  };
+}
+
+function deserializeIcon(cfg) {
+  if (!cfg) return null;
+  const kind = ['image', 'gif', 'emoji'].includes(cfg.kind) ? cfg.kind : 'image';
+  const icon = defaultIconConfig({
+    kind, name: String(cfg.name || ''),
+    emoji: String(cfg.emoji || '').slice(0, 12),
+    dataUrl: typeof cfg.dataUrl === 'string' && cfg.dataUrl.startsWith('data:image/') ? cfg.dataUrl : '',
+    size: clamp(Number(cfg.size) || 48, 16, 140),
+    baseFacing: ICON_FACINGS.has(cfg.baseFacing) ? cfg.baseFacing : 'right',
+    autoFlip: cfg.autoFlip !== false,
+    rotate: !!cfg.rotate,
+  });
+  if (kind === 'emoji') return icon.emoji ? icon : null;
+  if (!icon.dataUrl) return null;
+  icon.img = new Image();
+  icon.img.src = icon.dataUrl;
+  if (kind === 'gif') {
+    fetch(icon.dataUrl).then(r => r.blob())
+      .then(blob => decodeGifFrames(new File([blob], icon.name || 'icon.gif', { type: 'image/gif' })))
+      .then(decoded => {
+        if (decoded) { icon.frames = decoded.frames; icon.totalDuration = decoded.total; }
+      })
+      .catch(() => {});
+  }
+  return icon;
+}
+
+function readFileDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const rd = new FileReader();
+    rd.onload = () => resolve(String(rd.result));
+    rd.onerror = reject;
+    rd.readAsDataURL(file);
+  });
+}
+
+async function createIconFromFile(file) {
+  if (file.size > 4 * 1024 * 1024) throw new Error('icon too large');
+  const dataUrl = await readFileDataUrl(file);
+  const img = await loadImageElement(dataUrl);
+  const kind = isGifFile(file) ? 'gif' : 'image';
+  const icon = defaultIconConfig({
+    kind, name: file.name, dataUrl, img,
+  });
+  if (kind === 'gif') {
+    const decoded = await decodeGifFrames(file);
+    if (decoded) { icon.frames = decoded.frames; icon.totalDuration = decoded.total; }
+  }
+  return icon;
+}
+
+function setEmojiIcon(stop, text) {
+  const emoji = String(text || '').trim().slice(0, 12);
+  if (!emoji) return;
+  stop.icon = {
+    ...defaultIconConfig(), kind: 'emoji', emoji, dataUrl: '', img: null, frames: null,
+    size: stop.icon?.size || 48,
+    baseFacing: stop.icon?.baseFacing || 'right',
+    autoFlip: stop.icon?.autoFlip !== false,
+    rotate: !!stop.icon?.rotate,
+  };
+}
+
+function legDirectionInfo(leg) {
+  if (!leg) return { east: true, eastWest: false, bearing: 0 };
+  const from = leg.from, to = leg.to;
+  const dlng = shortestDelta(from.lng, to.lng);
+  const dlat = to.lat - from.lat;
+  const mid = (from.lat + to.lat) / 2 * Math.PI / 180;
+  const eastKm = dlng * 111.32 * Math.cos(mid);
+  const northKm = dlat * 110.57;
+  return {
+    east: eastKm >= 0,
+    eastWest: Math.abs(eastKm) >= Math.max(1, Math.abs(northKm) * 0.25),
+    bearing: bearingDeg([from.lng, from.lat], [to.lng, to.lat]),
+  };
+}
+
+function customIconTransform(icon, leg, heading) {
+  const dir = legDirectionInfo(leg);
+  let flip = false, rotation = 0;
+  if (!icon) return { flip, rotation };
+  if (icon.rotate) {
+    const base = icon.baseFacing === 'right' ? 90 : icon.baseFacing === 'left' ? -90 : 0;
+    const h = Number.isFinite(heading) ? heading : dir.bearing;
+    rotation = ((h - base + 540) % 360) - 180;
+  } else if (icon.autoFlip && dir.eastWest) {
+    if (icon.baseFacing === 'right' && !dir.east) flip = true;
+    if (icon.baseFacing === 'left' && dir.east) flip = true;
+  }
+  return { flip, rotation };
+}
+
 
 
 function esc(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function legIconControls(s) {
+  const icon = s.icon;
+  const disabled = icon ? '' : 'disabled';
+  const size = icon ? clamp(Number(icon.size) || 48, 16, 140) : 48;
+  const facing = icon ? icon.baseFacing : 'right';
+  const emoji = icon && icon.kind === 'emoji' ? icon.emoji : '';
+  const summary = icon
+    ? (icon.kind === 'emoji' ? icon.emoji : (icon.name || t('vehicleIcon')))
+    : t('iconDefault');
+  return `
+    <details class="leg-icon ${icon ? 'has-icon' : ''}" ${icon ? 'open' : ''}>
+      <summary>
+        <span class="icon-label">${esc(t('vehicleIcon'))}</span>
+        <span class="icon-preview">${iconPreviewHtml(icon)}</span>
+        <span class="icon-summary">${esc(summary)}</span>
+      </summary>
+      <div class="icon-settings">
+        <div class="icon-actions">
+          <button type="button" class="btn btn-ghost small" data-icon-upload="${s.id}">${esc(t('iconUpload'))}</button>
+          <button type="button" class="btn btn-ghost small ${icon ? '' : 'hidden'}" data-icon-clear="${s.id}">${esc(t('iconClear'))}</button>
+          <input type="text" class="icon-emoji-input" data-icon-emoji="${s.id}" value="${esc(emoji)}" placeholder="${esc(t('iconEmojiPh'))}" maxlength="12" />
+        </div>
+        <div class="icon-row">
+          <label>${esc(t('iconSize'))} <input type="number" data-icon-size="${s.id}" min="16" max="140" step="1" value="${size}" ${disabled} /> px</label>
+          <label>${esc(t('iconFacing'))}
+            <select data-icon-facing="${s.id}" ${disabled}>
+              <option value="right" ${facing === 'right' ? 'selected' : ''}>${esc(t('iconFacingRight'))}</option>
+              <option value="left" ${facing === 'left' ? 'selected' : ''}>${esc(t('iconFacingLeft'))}</option>
+              <option value="up" ${facing === 'up' ? 'selected' : ''}>${esc(t('iconFacingUp'))}</option>
+            </select>
+          </label>
+        </div>
+        <div class="icon-row checks">
+          <label class="check"><input type="checkbox" data-icon-flip="${s.id}" ${icon && icon.autoFlip !== false ? 'checked' : ''} ${disabled} />${esc(t('iconAutoFlip'))}</label>
+          <label class="check"><input type="checkbox" data-icon-rotate="${s.id}" ${icon && icon.rotate ? 'checked' : ''} ${disabled} />${esc(t('iconRotate'))}</label>
+        </div>
+        <p class="hint">${esc(t('iconHint'))}</p>
+      </div>
+    </details>`;
 }
 
 function renderStops() {
@@ -1224,7 +1392,7 @@ function renderStops() {
         <button class="mini" data-up="${s.id}" title="${esc(t('tipUp'))}">${svgIcon('up')}</button>
         <button class="mini" data-down="${s.id}" title="${esc(t('tipDown'))}">${svgIcon('down')}</button>
         <button class="mini" data-del="${s.id}" title="${esc(t('tipRemove'))}">${svgIcon('x')}</button>
-      </div>${legSelect}${mediaStrip}`;
+      </div>${legSelect}${i === 0 ? '' : legIconControls(s)}${mediaStrip}`;
     ol.appendChild(li);
   });
   $('#stop-count').textContent = stops.length;
@@ -1250,6 +1418,41 @@ function renderStops() {
     const s = stops.find(x => x.id === inp.dataset.mediaInterval);
     if (s) s.mediaInterval = clamp(parseFloat(inp.value) || settings.mediaInterval, 1, 15);
     renderStops();
+  });
+  ol.querySelectorAll('[data-icon-upload]').forEach(b => b.onclick = () => {
+    iconTargetId = b.dataset.iconUpload;
+    $('#file-icon').click();
+  });
+  ol.querySelectorAll('[data-icon-clear]').forEach(b => b.onclick = () => {
+    const s = stops.find(x => x.id === b.dataset.iconClear);
+    if (s) { s.icon = null; renderStops(); }
+  });
+  ol.querySelectorAll('[data-icon-emoji]').forEach(inp => inp.onchange = () => {
+    const s = stops.find(x => x.id === inp.dataset.iconEmoji);
+    if (!s) return;
+    const v = inp.value.trim();
+    if (v) setEmojiIcon(s, v);
+    else if (s.icon && s.icon.kind === 'emoji') s.icon = null;
+    renderStops();
+  });
+  ol.querySelectorAll('[data-icon-emoji]').forEach(inp => inp.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+  });
+  ol.querySelectorAll('[data-icon-size]').forEach(inp => inp.onchange = () => {
+    const s = stops.find(x => x.id === inp.dataset.iconSize);
+    if (s && s.icon) s.icon.size = clamp(parseFloat(inp.value) || 48, 16, 140);
+  });
+  ol.querySelectorAll('[data-icon-facing]').forEach(sel => sel.onchange = () => {
+    const s = stops.find(x => x.id === sel.dataset.iconFacing);
+    if (s && s.icon) s.icon.baseFacing = ICON_FACINGS.has(sel.value) ? sel.value : 'right';
+  });
+  ol.querySelectorAll('[data-icon-flip]').forEach(chk => chk.onchange = () => {
+    const s = stops.find(x => x.id === chk.dataset.iconFlip);
+    if (s && s.icon) s.icon.autoFlip = chk.checked;
+  });
+  ol.querySelectorAll('[data-icon-rotate]').forEach(chk => chk.onchange = () => {
+    const s = stops.find(x => x.id === chk.dataset.iconRotate);
+    if (s && s.icon) s.icon.rotate = chk.checked;
   });
   ol.querySelectorAll('[data-rename]').forEach(el => el.onclick = () => startRename(el.dataset.rename, el));
 
@@ -1577,6 +1780,7 @@ function configPayload() {
       name: s.name, nameZh: s.nameZh || '', nameEn: s.nameEn || '',
       lng: s.lng, lat: s.lat, mode: s.mode || 'plane',
       mediaInterval: s.mediaInterval || null,
+      icon: serializeIcon(s.icon),
       mediaMeta: (s.media || []).map(m => ({ kind: m.kind, name: m.name, width: m.width, height: m.height, duration: m.duration || 0 })),
     })),
     customPlaces: customPlaces.map(p => ({ name: p.name, lng: p.lng, lat: p.lat })),
@@ -1634,6 +1838,7 @@ function loadConfigFile(file) {
           lng: Number(x.lng), lat: Number(x.lat), mode: MODES[x.mode] ? x.mode : 'plane',
           mediaInterval: Number(x.mediaInterval) > 0 ? Number(x.mediaInterval) : null,
           media: [],
+          icon: deserializeIcon(x.icon),
         }));
 
       if (Array.isArray(cfg.customPlaces)) {
@@ -2287,6 +2492,7 @@ function paintFrame(tl, tMs) {
   const lt = clamp((t - seg.start) / Math.max(1, seg.end - seg.start), 0, 1);
   const key = seg.type + ':' + seg.start;
   const entered = anim._seg !== key; anim._seg = key;
+  anim.clockMs = t;
 
   anim.pulse = null; anim.photo = null; anim.titleAlpha = 0;
   anim.reached = seg.reached;
@@ -2864,6 +3070,39 @@ function drawMediaStack(ctx, W, H, s) {
   }
 }
 
+function drawCustomMarker(ctx, x, y, s, icon, leg) {
+  if (!icon) return false;
+  const px = clamp(Number(icon.size) || 48, 16, 140) * s;
+  const tr = customIconTransform(icon, leg, anim.heading);
+  ctx.save();
+  ctx.translate(x, y);
+  if (tr.rotation) ctx.rotate(tr.rotation * Math.PI / 180);
+  if (tr.flip) ctx.scale(-1, 1);
+  ctx.shadowColor = 'rgba(0,0,0,.42)';
+  ctx.shadowBlur = 8 * s;
+  ctx.shadowOffsetY = 3 * s;
+  if (icon.kind === 'emoji') {
+    ctx.font = `${px * 0.92}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(icon.emoji || '🚗', 0, 0);
+    ctx.restore();
+    return true;
+  }
+  let src = null;
+  if (icon.kind === 'gif') src = icon.frames ? gifFrameAt(icon, anim.clockMs || 0, true) : icon.img;
+  else src = icon.img;
+  if (!src || (src.tagName === 'IMG' && (!src.complete || !src.naturalWidth))) { ctx.restore(); return false; }
+  const iw = src.videoWidth || src.naturalWidth || src.width || 1;
+  const ih = src.videoHeight || src.naturalHeight || src.height || 1;
+  const scale = Math.min(px / iw, px / ih);
+  const w = iw * scale, h = ih * scale;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, -w / 2, -h / 2, w, h);
+  ctx.restore();
+  return true;
+}
+
 function drawScene(ctx, W, H, dpr) {
   const s = dpr;
   const accent = settings.accent;
@@ -2886,37 +3125,41 @@ function drawScene(ctx, W, H, dpr) {
   // grounded shadow. No outline; the shadow provides the separation. ----
   if (anim.marker && (anim.phase === 'leg' || anim.phase === 'pause')) {
     const [x, y] = project(anim.marker[0], anim.marker[1], dpr);
-    const mode = MODES[anim.markerMode] || {};
-    const alt = mode.directional ? (anim.alt || 0) : 0;
-    const side = (mode.directional ? 34 : 29) * s * (1 + 0.45 * alt);
-    const rot = mode.directional && anim.heading != null ? anim.heading * Math.PI / 180 : 0;
-    // white glyph: contrasts with the accent trail underneath and with any
-    // basemap; a thin dark rim keeps it readable on light styles too
-    const icon = iconImage(anim.markerMode, '#ffffff');
-    const rim = iconImage(anim.markerMode, '#22303f');
-    const shade = iconImage(anim.markerMode, '#000000');
-    if (icon.complete && icon.naturalWidth && rim.complete && shade.complete) {
-      ctx.imageSmoothingQuality = 'high';
-      // cast shadow: separates, blurs and fades as the plane climbs
-      const drop = (3 + 15 * alt) * s;
-      ctx.save();
-      ctx.translate(x + drop * 0.45, y + drop);
-      ctx.rotate(rot);
-      ctx.globalAlpha = 0.34 - 0.18 * alt;
-      ctx.filter = `blur(${(1.5 + 3.5 * alt) * s}px)`;
-      ctx.drawImage(shade, -side / 2, -side / 2, side, side);
-      ctx.restore();
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(rot);
-      const o = 1.4 * s;
-      ctx.globalAlpha = 0.9;
-      for (const [dx, dy] of [[-o, 0], [o, 0], [0, -o], [0, o]]) {
-        ctx.drawImage(rim, -side / 2 + dx, -side / 2 + dy, side, side);
+    const leg = anim.legs[anim.legIndex] || null;
+    const customIcon = leg && leg.to && leg.to.icon;
+    if (!(customIcon && drawCustomMarker(ctx, x, y, s, customIcon, leg))) {
+      const mode = MODES[anim.markerMode] || {};
+      const alt = mode.directional ? (anim.alt || 0) : 0;
+      const side = (mode.directional ? 34 : 29) * s * (1 + 0.45 * alt);
+      const rot = mode.directional && anim.heading != null ? anim.heading * Math.PI / 180 : 0;
+      // white glyph: contrasts with the accent trail underneath and with any
+      // basemap; a thin dark rim keeps it readable on light styles too
+      const icon = iconImage(anim.markerMode, '#ffffff');
+      const rim = iconImage(anim.markerMode, '#22303f');
+      const shade = iconImage(anim.markerMode, '#000000');
+      if (icon.complete && icon.naturalWidth && rim.complete && shade.complete) {
+        ctx.imageSmoothingQuality = 'high';
+        // cast shadow: separates, blurs and fades as the plane climbs
+        const drop = (3 + 15 * alt) * s;
+        ctx.save();
+        ctx.translate(x + drop * 0.45, y + drop);
+        ctx.rotate(rot);
+        ctx.globalAlpha = 0.34 - 0.18 * alt;
+        ctx.filter = `blur(${(1.5 + 3.5 * alt) * s}px)`;
+        ctx.drawImage(shade, -side / 2, -side / 2, side, side);
+        ctx.restore();
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(rot);
+        const o = 1.4 * s;
+        ctx.globalAlpha = 0.9;
+        for (const [dx, dy] of [[-o, 0], [o, 0], [0, -o], [0, o]]) {
+          ctx.drawImage(rim, -side / 2 + dx, -side / 2 + dy, side, side);
+        }
+        ctx.globalAlpha = 1;
+        ctx.drawImage(icon, -side / 2, -side / 2, side, side);
+        ctx.restore();
       }
-      ctx.globalAlpha = 1;
-      ctx.drawImage(icon, -side / 2, -side / 2, side, side);
-      ctx.restore();
     }
   }
 
@@ -3290,6 +3533,32 @@ function wire() {
     const s = stops.find(x => x.id === photoTargetId);
     if (!files.length || !s) return;
     addMediaFiles(s, files);
+  };
+
+  $('#file-icon').onchange = async e => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    const s = stops.find(x => x.id === iconTargetId);
+    if (!file || !s) return;
+    loading(true, t('iconLoading'));
+    try {
+      const previous = s.icon;
+      const next = await createIconFromFile(file);
+      if (previous) {
+        next.size = previous.size;
+        next.baseFacing = previous.baseFacing;
+        next.autoFlip = previous.autoFlip;
+        next.rotate = previous.rotate;
+      }
+      s.icon = next;
+      renderStops();
+      toast(t('iconLoaded', { name: file.name }));
+    } catch (err) {
+      console.warn('icon load failed:', err);
+      toast(err && err.message === 'icon too large' ? t('iconTooLarge') : t('iconInvalid'));
+    } finally {
+      loading(false);
+    }
   };
 
   $('#btn-music').onclick = () => $('#file-music').click();
