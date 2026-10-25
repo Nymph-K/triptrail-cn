@@ -127,7 +127,15 @@
       <!-- Project configuration -->
       <section class="panel">
         <h2 data-i18n="projectConfig">项目配置</h2>
-        <p class="hint" data-i18n="configHint">保存/载入标题、途经点坐标、路线方式、地图与媒体设置。图片、GIF、视频文件不写入配置文件。</p>
+        <p class="hint" data-i18n="configHint">保存/载入标题、途经点坐标、路线方式、地图与媒体设置。资源文件以绝对路径链接写入配置，载入时自动恢复。</p>
+        <label class="field">
+          <span data-i18n="resourceRoot">资源文件夹（绝对路径）</span>
+          <div class="path-row">
+            <input id="inp-resource-root" type="text" data-i18n-placeholder="resourceRootPh" spellcheck="false" autocomplete="off" />
+            <button id="btn-pick-root" class="btn btn-ghost small" type="button" data-i18n="browse">浏览…</button>
+          </div>
+        </label>
+        <p class="local-hint" id="resource-root-hint" data-i18n="resourceRootHint">从该文件夹添加的照片、视频、图标和音乐会自动记录绝对路径。</p>
         <div class="btnrow">
           <button id="btn-save-config" class="btn btn-ghost small">
             <svg class="ic" viewBox="0 0 24 24"><path d="M5 4h11l3 3v13H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 4v6h8V4M8 20v-6h8v6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
@@ -137,6 +145,13 @@
             <svg class="ic" viewBox="0 0 24 24"><path d="M4 20h16M12 4v11M7.5 10.5 12 15l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span data-i18n="loadConfig">载入配置</span>
           </button>
+        </div>
+        <div class="path-actions">
+          <button id="btn-resolve-paths" class="btn btn-ghost small" type="button">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M10.4 13.6a3.3 3.3 0 0 0 4.7 0l2.5-2.5a3.3 3.3 0 0 0-4.7-4.7l-1.2 1.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M13.6 10.4a3.3 3.3 0 0 0-4.7 0l-2.5 2.5a3.3 3.3 0 0 0 4.7 4.7l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+            <span data-i18n="bindPaths">补全资源路径</span>
+          </button>
+          <span id="path-status" class="path-status"></span>
         </div>
       </section>
 
@@ -253,6 +268,10 @@
               <svg class="ic" viewBox="0 0 24 24"><path d="M7 7 17 17 M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
               <span data-i18n="remove">移除</span>
             </button>
+            <button id="btn-music-path" class="btn btn-ghost small hidden" type="button">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M10.4 13.6a3.3 3.3 0 0 0 4.7 0l2.5-2.5a3.3 3.3 0 0 0-4.7-4.7l-1.2 1.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M13.6 10.4a3.3 3.3 0 0 0-4.7 0l-2.5 2.5a3.3 3.3 0 0 0 4.7 4.7l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+              <span data-i18n="bindPath">绑定路径</span>
+            </button>
           </div>
         </div>
         <label class="field">
@@ -316,6 +335,20 @@
 <input id="file-icon" type="file" accept="image/png,image/svg+xml,image/jpeg,image/gif,image/webp,image/x-icon,image/vnd.microsoft.icon,.png,.svg,.jpg,.jpeg,.gif,.ico,.webp" class="hidden" />
 <audio id="music" loop class="hidden"></audio>
 <div id="media-bin" aria-hidden="true"></div>
+
+<!-- resource path dialog: path input + local folder browser -->
+<div id="res-modal" class="modal hidden" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="res-modal-title">
+    <header class="modal-head">
+      <h3 id="res-modal-title"></h3>
+      <button id="res-modal-x" class="modal-x" type="button" data-i18n-aria-label="closeDialog" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7 17 17 M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div id="res-modal-body" class="modal-body"></div>
+    <footer id="res-modal-foot" class="modal-foot"></footer>
+  </div>
+</div>
 
 <script src="vendor/maplibre/maplibre-gl.js"></script>
 <script src="i18n.js"></script>

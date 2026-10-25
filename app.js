@@ -28,6 +28,7 @@ function savePrefs() {
       lang: LANG, region: settings.region, style: settings.style,
       cityLevel: settings.cityLevel, cities: settings.cities, borders: settings.borders,
       mediaInterval: settings.mediaInterval, mediaRatio: settings.mediaRatio,
+      resourceRoot: settings.resourceRoot,
     }));
   } catch { /* private mode */ }
 }
@@ -51,6 +52,9 @@ const ICONS = {
   up: '<path d="M6 14.5 12 8.5 18 14.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
   down: '<path d="M6 9.5 12 15.5 18 9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
   x: '<path d="M7 7 17 17 M17 7 7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  link: '<path d="M10.4 13.6a3.3 3.3 0 0 0 4.7 0l2.5-2.5a3.3 3.3 0 0 0-4.7-4.7l-1.2 1.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M13.6 10.4a3.3 3.3 0 0 0-4.7 0l-2.5 2.5a3.3 3.3 0 0 0 4.7 4.7l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>',
+  folder: '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h8.5A1.5 1.5 0 0 1 21 10v7.5A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
+  file: '<path d="M6 3.5h7l5 5v12H6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13 3.5v5h5" fill="none" stroke="currentColor" stroke-width="1.7"/>',
 };
 
 function svgIcon(name) {
@@ -143,6 +147,7 @@ const settings = {
   pace: 1,
   mediaInterval: clamp(Number(PREFS.mediaInterval) || 3, 1, 10),
   mediaRatio: MEDIA_RATIOS.includes(PREFS.mediaRatio) ? PREFS.mediaRatio : 'original',
+  resourceRoot: typeof PREFS.resourceRoot === 'string' ? PREFS.resourceRoot : '',
   title: t('defaultTitle'),
   subtitle: t('defaultSubtitle'),
   watermark: '',
@@ -152,8 +157,7 @@ const settings = {
 
 /* ----------------------------- Animation state ----------------------------- */
 const anim = {
-  playing: false,
-  recording: false,
+  playing: false,  recording: false,
   phase: 'idle',          // idle | intro | leg | pause | outro
   marker: null,           // [lng,lat]
   markerMode: 'plane',
@@ -179,11 +183,25 @@ let map, mediaRecorder, recordedChunks = [], cancelToken = 0;
 let photoTargetId = null;
 let basePixelRatio = window.devicePixelRatio || 1;
 
+/* Local file bridge (see server.mjs). When the page is not served by the
+   bundled server — e.g. a plain static host — the path features switch off and
+   the app keeps the old behaviour of asking for the files again. */
+const FS = {
+  enabled: false,
+  token: '',
+  platform: 'win32',
+  sep: '\\',
+  home: '',
+  roots: [],
+};
+
 /* China data: 3k+ offline places + simplified boundaries. */
 const chinaData = { cities: [], pois: [], index: [], ready: false, failed: false };
 const boundaryCache = {};
 let placeRaf = 0;
 let musicFileName = '';
+let musicPath = '';
+let musicSize = 0;
 let lastVideo = null;
 let activeMediaVideo = null;
 let iconTargetId = null;
@@ -935,23 +953,35 @@ function loadImageElement(url) {
   });
 }
 
-async function imageMediaFromFile(file) {
-  const url = URL.createObjectURL(file);
-  const img = await loadImageElement(url);
+async function imageMediaFromSrc(src, name, { gifBlob = null } = {}) {
+  const img = await loadImageElement(src);
   const media = {
-    id: id(), kind: isGifFile(file) ? 'gif' : 'image', name: file.name,
-    src: url, objectUrl: url, img,
+    id: id(), kind: gifBlob ? 'gif' : 'image', name,
+    src, objectUrl: '', img,
     width: img.naturalWidth || 1200, height: img.naturalHeight || 800,
-    duration: 0,
+    duration: 0, path: '', size: 0,
   };
-  if (media.kind === 'gif') {
-    const decoded = await decodeGifFrames(file);
+  if (gifBlob) {
+    const decoded = await decodeGifFrames(gifBlob);
     if (decoded) {
       media.frames = decoded.frames;
       media.totalDuration = decoded.total;
     }
   }
   return media;
+}
+
+async function imageMediaFromFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const media = await imageMediaFromSrc(url, file.name, { gifBlob: isGifFile(file) ? file : null });
+    media.objectUrl = url;
+    media.size = file.size;
+    return media;
+  } catch (e) {
+    URL.revokeObjectURL(url);
+    throw e;
+  }
 }
 
 function waitForVideo(video, timeoutMs = 15000) {
@@ -992,8 +1022,18 @@ async function videoPoster(video) {
   } catch { return ''; }
 }
 
-async function videoMediaFromFile(file, kind, posterFile) {
-  const url = URL.createObjectURL(file);
+async function imagePosterFrom(url) {
+  const img = await loadImageElement(url);
+  const c = document.createElement('canvas');
+  c.width = 480;
+  c.height = Math.max(1, Math.round(480 * (img.naturalHeight || 9) / Math.max(1, img.naturalWidth || 16)));
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.84);
+}
+
+// Shared loader for files picked in the dialog and files restored from an
+// absolute path: both end up as a hidden <video> the canvas can paint.
+async function videoMediaFrom({ url, name, kind, posterFile = null, posterUrl = '', size = 0 }) {
   const video = document.createElement('video');
   video.src = url;
   video.muted = true;
@@ -1010,25 +1050,31 @@ async function videoMediaFromFile(file, kind, posterFile) {
     let poster = await videoPoster(video);
     if (posterFile) {
       const pu = URL.createObjectURL(posterFile);
-      try {
-        const img = await loadImageElement(pu);
-        const c = document.createElement('canvas');
-        c.width = 480;
-        c.height = Math.max(1, Math.round(480 * img.naturalHeight / Math.max(1, img.naturalWidth)));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        poster = c.toDataURL('image/jpeg', 0.84);
-      } catch { /* use video frame */ }
+      try { poster = await imagePosterFrom(pu); } catch { /* use video frame */ }
       URL.revokeObjectURL(pu);
+    } else if (posterUrl) {
+      try { poster = await imagePosterFrom(posterUrl); } catch { /* use video frame */ }
     }
     return {
-      id: id(), kind, name: file.name, src: url, objectUrl: url,
+      id: id(), kind, name, src: url, objectUrl: '',
       video, poster, posterImg: (() => { const im = new Image(); im.src = poster; return im; })(),
       width: video.videoWidth || 1280, height: video.videoHeight || 720,
-      duration,
+      duration, path: '', size,
     };
   } catch (e) {
     video.pause();
     video.remove();
+    throw e;
+  }
+}
+
+async function videoMediaFromFile(file, kind, posterFile) {
+  const url = URL.createObjectURL(file);
+  try {
+    const media = await videoMediaFrom({ url, name: file.name, kind, posterFile, size: file.size });
+    media.objectUrl = url;
+    return media;
+  } catch (e) {
     URL.revokeObjectURL(url);
     throw e;
   }
@@ -1077,11 +1123,73 @@ async function addMediaFiles(stop, files) {
     if (files.some(isHeicFile)) toast(t('mediaHeicUnsupported'), 5200);
     return;
   }
+  bindPathsForAddedFiles(added, files);
+  if (FS.enabled) await verifyMediaPaths(added);
   stop.media = [...(stop.media || []), ...added];
   renderStops();
+  updatePathStatus();
   toast(t('mediaAdded', { n: added.length }));
   if (skipped) toast(t('mediaUnsupported', { n: skipped }), 4200);
   if (added.some(m => m.kind === 'video' || m.kind === 'live')) toast(t('videoRealtimeExport'), 4200);
+}
+
+// Remember where each picked file lives so the config can link to it. The
+// browser never exposes a path, so the link is derived from the resource
+// folder the user chose (plus the folder-relative name for directory picks).
+function bindPathsForAddedFiles(added, files) {
+  if (!settings.resourceRoot) return;
+  const byName = new Map();
+  for (const f of files) byName.set(f.name, f);
+  for (const m of added) {
+    const f = byName.get(m.name);
+    if (!f) continue;
+    m.size = m.size || f.size || 0;
+    const rel = f.webkitRelativePath || f.name;
+    const guess = fsJoin(settings.resourceRoot, rel);
+    if (guess) m.path = guess;
+  }
+}
+
+async function verifyMediaPaths(items) {
+  await Promise.all(items.filter(m => m.path).map(async m => {
+    const st = await fsStat(m.path);
+    if (!st || !st.exists || !st.isFile) { m.path = ''; return; }
+    if (st.size && m.size && Math.abs(st.size - m.size) > 2) { m.path = ''; return; }
+    m.size = st.size || m.size || 0;
+  }));
+}
+
+// Rebuild a media card from an absolute path recorded in the config.
+async function mediaFromPath(entry) {
+  const p = String((entry && entry.path) || '');
+  if (!p || !FS.enabled) return null;
+  const st = await fsStat(p);
+  if (!st || !st.exists || !st.isFile) return null;
+  const url = fsFileUrl(p);
+  const name = entry.name || pathBaseName(p);
+  const kind = ['image', 'gif', 'video', 'live'].includes(entry.kind) ? entry.kind : 'image';
+  if (kind === 'image' || kind === 'gif') {
+    let blob = null;
+    if (kind === 'gif') {
+      try {
+        const r = await fetch(url);
+        if (r.ok) blob = await r.blob();
+      } catch { /* fall back to the animated <img> */ }
+    }
+    const media = await imageMediaFromSrc(url, name, { gifBlob: kind === 'gif' ? blob : null });
+    media.kind = kind;
+    media.path = p;
+    media.size = st.size || 0;
+    return media;
+  }
+  const media = await videoMediaFrom({
+    url, name, kind,
+    posterUrl: entry.posterPath ? fsFileUrl(entry.posterPath) : '',
+    size: st.size || 0,
+  });
+  media.path = p;
+  media.posterPath = entry.posterPath || '';
+  return media;
 }
 
 function disposeMedia(media) {
@@ -1186,7 +1294,7 @@ const ICON_FACINGS = new Set(['right', 'left', 'up']);
 
 function defaultIconConfig(extra = {}) {
   return {
-    kind: 'image', name: '', dataUrl: '', emoji: '',
+    kind: 'image', name: '', dataUrl: '', emoji: '', path: '', sizeBytes: 0,
     img: null, frames: null, totalDuration: 0,
     size: 48, baseFacing: 'right', autoFlip: true, rotate: false,
     ...extra,
@@ -1202,9 +1310,15 @@ function iconPreviewHtml(icon) {
 
 function serializeIcon(icon) {
   if (!icon) return null;
+  const hasPath = !!icon.path;
   return {
     kind: icon.kind, name: icon.name || '', emoji: icon.emoji || '',
-    dataUrl: icon.dataUrl || '', size: clamp(Number(icon.size) || 48, 16, 140),
+    path: icon.path || '',
+    // A linked icon is stored as a path; the base64 copy is only kept as a
+    // fallback for icons that could not be linked to a file.
+    dataUrl: !hasPath && typeof icon.dataUrl === 'string' && icon.dataUrl.startsWith('data:image/') ? icon.dataUrl : '',
+    bytes: Math.round(Number(icon.sizeBytes) || 0),
+    size: clamp(Number(icon.size) || 48, 16, 140),
     baseFacing: ICON_FACINGS.has(icon.baseFacing) ? icon.baseFacing : 'right',
     autoFlip: icon.autoFlip !== false, rotate: !!icon.rotate,
   };
@@ -1217,12 +1331,17 @@ function deserializeIcon(cfg) {
     kind, name: String(cfg.name || ''),
     emoji: String(cfg.emoji || '').slice(0, 12),
     dataUrl: typeof cfg.dataUrl === 'string' && cfg.dataUrl.startsWith('data:image/') ? cfg.dataUrl : '',
+    path: typeof cfg.path === 'string' ? cfg.path : '',
+    sizeBytes: Number(cfg.bytes) > 0 ? Number(cfg.bytes) : 0,
     size: clamp(Number(cfg.size) || 48, 16, 140),
     baseFacing: ICON_FACINGS.has(cfg.baseFacing) ? cfg.baseFacing : 'right',
     autoFlip: cfg.autoFlip !== false,
     rotate: !!cfg.rotate,
   });
   if (kind === 'emoji') return icon.emoji ? icon : null;
+  // Prefer the absolute-path link when the local file API is available.
+  if (icon.path && FS.enabled) icon.dataUrl = fsFileUrl(icon.path);
+  else icon.path = '';
   if (!icon.dataUrl) return null;
   icon.img = new Image();
   icon.img.src = icon.dataUrl;
@@ -1252,8 +1371,15 @@ async function createIconFromFile(file) {
   const img = await loadImageElement(dataUrl);
   const kind = isGifFile(file) ? 'gif' : 'image';
   const icon = defaultIconConfig({
-    kind, name: file.name, dataUrl, img,
+    kind, name: file.name, dataUrl, img, sizeBytes: file.size,
   });
+  // Link the icon to its file when the resource folder is known and the file
+  // really is there (same size check as the media items).
+  if (settings.resourceRoot) {
+    const guess = fsJoin(settings.resourceRoot, file.webkitRelativePath || file.name);
+    const st = await fsStat(guess);
+    if (st && st.exists && st.isFile && (!st.size || Math.abs(st.size - file.size) <= 2)) icon.path = guess;
+  }
   if (kind === 'gif') {
     // Show the GIF immediately via <img>; decode frames in the background so
     // a slow/large GIF can never block the upload or hide the icon.
@@ -1347,6 +1473,7 @@ function legIconControls(s) {
         <div class="icon-actions">
           <button type="button" class="btn btn-ghost small" data-icon-upload="${s.id}">${esc(t('iconUpload'))}</button>
           <button type="button" class="btn btn-ghost small ${icon ? '' : 'hidden'}" data-icon-clear="${s.id}">${esc(t('iconClear'))}</button>
+          <button type="button" class="btn btn-ghost small path-btn ${icon && icon.kind !== 'emoji' ? '' : 'hidden'} ${icon && icon.path ? 'on' : ''}" data-icon-link="${s.id}" title="${esc(icon && icon.path ? t('mediaPathLinked') : t('mediaPathMissing'))}">${svgIcon('link')}<span>${esc(t('bindPath'))}</span></button>
           <input type="text" class="icon-emoji-input" data-icon-emoji="${s.id}" value="${esc(emoji)}" placeholder="${esc(t('iconEmojiPh'))}" maxlength="12" />
         </div>
         <div class="icon-row">
@@ -1389,12 +1516,13 @@ function renderStops() {
         <span class="route-note ${routeKey}" title="${esc(t('routeHint'))}">${esc(t(routeKey))}</span>
       </div>`;
     const mediaStrip = media.length ? `
-      <div class="media-strip">
+      <div class="media-strip" data-media-strip="${s.id}" title="${esc(t('mediaDragHint'))}">
         ${media.map(m => `
-          <div class="media-chip ${m.kind}" title="${esc(m.name)}">
-            ${mediaThumbSrc(m) ? `<img src="${esc(mediaThumbSrc(m))}" alt="${esc(t('photoAlt'))}" />` : `<span>${esc(mediaKindLabel(m.kind))}</span>`}
+          <div class="media-chip ${m.kind} ${m.path ? 'linked' : 'unlinked'}" draggable="true" data-media-id="${m.id}" title="${esc(m.path || m.name)}">
+            ${mediaThumbSrc(m) ? `<img src="${esc(mediaThumbSrc(m))}" alt="${esc(t('photoAlt'))}" draggable="false" />` : `<span>${esc(mediaKindLabel(m.kind))}</span>`}
             <span class="kind">${esc(mediaKindLabel(m.kind))}</span>
-            <button class="del" data-media-del="${s.id}" data-media-id="${m.id}" title="${esc(t('mediaDelete'))}">×</button>
+            <button class="link" type="button" data-media-link="${s.id}" data-media-id="${m.id}" title="${esc(m.path ? t('mediaPathLinked') : t('mediaPathMissing'))}">${svgIcon('link')}</button>
+            <button class="del" type="button" data-media-del="${s.id}" data-media-id="${m.id}" title="${esc(t('mediaDelete'))}">×</button>
           </div>`).join('')}
         <label class="media-interval" title="${esc(t('mediaInterval'))}">${esc(t('mediaIntervalShort'))}
           <input type="number" min="1" max="15" step="0.5" value="${interval.toFixed(1)}" data-media-interval="${s.id}" />
@@ -1432,11 +1560,18 @@ function renderStops() {
     $('#file-photo').click();
   });
   ol.querySelectorAll('[data-media-del]').forEach(b => b.onclick = () => removeStopMedia(b.dataset.mediaDel, b.dataset.mediaId));
+  ol.querySelectorAll('[data-media-link]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const stop = stops.find(s => s.id === b.dataset.mediaLink);
+    const media = stop && (stop.media || []).find(m => m.id === b.dataset.mediaId);
+    if (media) openMediaPathDialog(media);
+  });
   ol.querySelectorAll('[data-media-interval]').forEach(inp => inp.onchange = () => {
     const s = stops.find(x => x.id === inp.dataset.mediaInterval);
     if (s) s.mediaInterval = clamp(parseFloat(inp.value) || settings.mediaInterval, 1, 15);
     renderStops();
   });
+  ol.querySelectorAll('.media-strip').forEach(strip => wireMediaReorder(strip, strip.dataset.mediaStrip));
   ol.querySelectorAll('[data-icon-upload]').forEach(b => b.onclick = () => {
     iconTargetId = b.dataset.iconUpload;
     $('#file-icon').click();
@@ -1444,6 +1579,10 @@ function renderStops() {
   ol.querySelectorAll('[data-icon-clear]').forEach(b => b.onclick = () => {
     const s = stops.find(x => x.id === b.dataset.iconClear);
     if (s) { s.icon = null; renderStops(); }
+  });
+  ol.querySelectorAll('[data-icon-link]').forEach(b => b.onclick = () => {
+    const s = stops.find(x => x.id === b.dataset.iconLink);
+    if (s && s.icon) openIconPathDialog(s);
   });
   ol.querySelectorAll('[data-icon-emoji]').forEach(inp => inp.onchange = () => {
     const s = stops.find(x => x.id === inp.dataset.iconEmoji);
@@ -1479,6 +1618,7 @@ function renderStops() {
   ol.querySelectorAll('.stop').forEach(li => {
     li.querySelector('.idx').addEventListener('mousedown', () => { li.draggable = true; });
     li.addEventListener('dragstart', e => {
+      if (e.target.closest('.media-chip')) return;
       li.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
       try { e.dataTransfer.setData('text/plain', li.dataset.id); } catch (err) { /* Safari */ }
@@ -1490,14 +1630,77 @@ function renderStops() {
     });
   });
   ol.ondragover = e => {
-    const dragging = ol.querySelector('.dragging');
+    const dragging = ol.querySelector('.stop.dragging');
     if (!dragging) return;
     e.preventDefault();
     const before = stopBefore(ol, e.clientY);
     if (before == null) ol.appendChild(dragging);
     else if (before !== dragging) ol.insertBefore(dragging, before);
   };
+  updatePathStatus();
   schedulePlaceLayer();
+}
+
+/* ---- media chips: drag horizontally to reorder the stop's carousel ----
+   The chips are a direct drag handle (unlike stop rows, which need the
+   number badge) because they are already small, discrete targets. */
+function wireMediaReorder(strip, stopId) {
+  strip.querySelectorAll('.media-chip').forEach(chip => {
+    chip.addEventListener('dragstart', e => {
+      e.stopPropagation();
+      chip.classList.add('dragging');
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', chip.dataset.mediaId); } catch { /* Safari */ }
+    });
+    chip.addEventListener('dragend', e => {
+      e.stopPropagation();
+      chip.classList.remove('dragging');
+      strip.classList.remove('drag-over');
+      commitMediaOrder(stopId, strip);
+    });
+  });
+  strip.addEventListener('dragover', e => {
+    const dragging = strip.querySelector('.media-chip.dragging');
+    if (!dragging) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+    strip.classList.add('drag-over');
+    const before = chipBefore(strip, e.clientX);
+    const label = strip.querySelector('.media-interval');
+    if (before == null) strip.insertBefore(dragging, label || null);
+    else if (before !== dragging) strip.insertBefore(dragging, before);
+  });
+  strip.addEventListener('dragleave', e => {
+    if (!strip.contains(e.relatedTarget)) strip.classList.remove('drag-over');
+  });
+  strip.addEventListener('drop', e => {
+    if (!strip.querySelector('.media-chip.dragging')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    strip.classList.remove('drag-over');
+  });
+}
+
+function chipBefore(strip, x) {
+  for (const chip of strip.querySelectorAll('.media-chip:not(.dragging)')) {
+    const r = chip.getBoundingClientRect();
+    if (x < r.left + r.width / 2) return chip;
+  }
+  return null;
+}
+
+// Adopt the order the chips were dropped into; the same order is used by the
+// preview and by the exported video.
+function commitMediaOrder(stopId, strip) {
+  const stop = stops.find(s => s.id === stopId);
+  if (!stop) return renderStops();
+  const byId = new Map((stop.media || []).map(m => [m.id, m]));
+  const next = [...strip.querySelectorAll('.media-chip')].map(chip => byId.get(chip.dataset.mediaId)).filter(Boolean);
+  if (next.length !== (stop.media || []).length) return renderStops();
+  const changed = next.some((m, i) => m !== stop.media[i]);
+  stop.media = next;
+  renderStops();
+  if (changed) toast(t('mediaReordered'), 2200);
 }
 
 // first stop whose midpoint is below the pointer — the drop lands above it
@@ -1779,11 +1982,450 @@ function loadCustomPlacesFile(file) {
   rd.readAsText(file);
 }
 
+/* ============================================================ resource links
+   A project config stores *links* — absolute paths — to the photos, videos,
+   icons and music it uses instead of embedding the bytes. A browser cannot
+   read a path from the file dialog, so the local server (server.mjs) resolves
+   names to paths and streams the files back on load. Without that API — for
+   example when the page is hosted on a plain static server — every helper here
+   quietly switches off and the old "re-add the files" flow remains. */
+
+function pathBaseName(p) {
+  return String(p || '').split(/[\\/]/).pop() || '';
+}
+
+function fsIsAbsolute(p) {
+  return /^[a-zA-Z]:[\\/]/.test(p) || /^\\\\/.test(p) || /^\//.test(p);
+}
+
+// Windows' "Copy as path" wraps the path in double quotes; accept that (and
+// stray quote characters) when a path is pasted into a field.
+function cleanPathInput(v) {
+  return String(v || '').trim().replace(/^["'\u201c\u201d\u2018\u2019]+|["'\u201c\u201d\u2018\u2019]+$/g, '').trim();
+}
+
+function fsJoin(dir, rel) {
+  const base = String(dir || '').replace(/[\\/]+$/, '');
+  if (!base) return '';
+  const sep = /[\\/]/.test(base) || /^[a-zA-Z]:/.test(base) ? '\\' : '/';
+  const tail = String(rel || '').replace(/^[\\/]+/, '').replace(/[\\/]+/g, sep);
+  return tail ? `${base}${sep}${tail}` : base;
+}
+
+function fsFileUrl(p) {
+  return `/api/fs/file?path=${encodeURIComponent(p)}&t=${encodeURIComponent(FS.token)}`;
+}
+
+let fsProbePromise = null;
+async function probeFileApi() {
+  if (!FS.enabled && !fsProbePromise) {
+    fsProbePromise = fetch('/api/fs/ping', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        if (!j || j.ok !== true || !j.token) return false;
+        FS.enabled = true;
+        FS.token = String(j.token);
+        FS.platform = j.platform || 'win32';
+        FS.sep = j.separator || (FS.platform === 'win32' ? '\\' : '/');
+        FS.home = j.home || '';
+        FS.roots = Array.isArray(j.roots) ? j.roots : [];
+        return true;
+      })
+      .catch(() => false);
+  }
+  if (fsProbePromise) await fsProbePromise;
+  updatePathStatus();
+  return FS.enabled;
+}
+
+async function ensureFileApi() {
+  await probeFileApi();
+  return FS.enabled;
+}
+
+async function fsStat(p) {
+  if (!FS.enabled || !fsIsAbsolute(p)) return null;
+  try {
+    const r = await fetch(`/api/fs/stat?path=${encodeURIComponent(p)}&t=${encodeURIComponent(FS.token)}`, { cache: 'no-store' });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function fsList(p) {
+  const q = p ? `path=${encodeURIComponent(p)}&t=${encodeURIComponent(FS.token)}` : `t=${encodeURIComponent(FS.token)}`;
+  const r = await fetch(`/api/fs/list?${q}`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`list failed: ${r.status}`);
+  return r.json();
+}
+
+function fsRootLabel(root) {
+  const key = `fsRoot_${root.kind}`;
+  const label = t(key);
+  return label !== key ? label : (pathBaseName(root.path) || root.path);
+}
+
+function formatSize(n) {
+  const v = Number(n) || 0;
+  if (!v) return '';
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${Math.round(v / 1024)} KB`;
+  return `${(v / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function resourceTargets() {
+  const out = [];
+  for (const s of stops) {
+    for (const m of s.media || []) {
+      out.push({
+        type: 'media', name: m.name || '', size: m.size || 0,
+        path: () => m.path || '',
+        set: p => { m.path = p; },
+      });
+    }
+    if (s.icon && s.icon.kind !== 'emoji' && s.icon.name) {
+      out.push({
+        type: 'icon', name: s.icon.name, size: s.icon.sizeBytes || 0,
+        path: () => (s.icon ? s.icon.path || '' : ''),
+        set: p => { if (s.icon) s.icon.path = p; },
+      });
+    }
+  }
+  if (musicFileName) {
+    out.push({
+      type: 'music', name: musicFileName, size: musicSize || 0,
+      path: () => musicPath || '',
+      set: p => { musicPath = p; },
+    });
+  }
+  return out;
+}
+
+function pathStats() {
+  const all = resourceTargets();
+  return { total: all.length, linked: all.filter(x => x.path()).length };
+}
+
+function updatePathStatus() {
+  const el = $('#path-status');
+  if (!el) return;
+  const { total, linked } = pathStats();
+  el.textContent = total ? t('pathStatus', { linked, total }) : t('pathStatusEmpty');
+  el.classList.toggle('warn', total > 0 && linked < total);
+  const rootInput = $('#inp-resource-root');
+  if (rootInput) {
+    rootInput.disabled = !FS.enabled;
+    rootInput.title = FS.enabled ? '' : t('fsUnavailable');
+  }
+  for (const id of ['#btn-pick-root', '#btn-resolve-paths']) {
+    const btn = $(id);
+    if (btn) btn.disabled = !FS.enabled || (id === '#btn-resolve-paths' && total === 0);
+  }
+  const hint = $('#resource-root-hint');
+  if (hint) hint.textContent = FS.enabled ? t('resourceRootHint') : t('fsUnavailable');
+}
+
+/* Resolve the absolute path of every linked resource that does not have one
+   yet: first the configured resource folder, then a bounded name+size search
+   across the usual photo/music folders. */
+async function resolveResourcePaths({ search = true } = {}) {
+  if (!(await ensureFileApi())) return { found: 0, missing: 0, total: 0 };
+  const all = resourceTargets();
+  const pending = all.filter(x => !x.path() && x.name);
+  if (!pending.length) return { found: 0, missing: 0, total: all.length };
+  let found = 0;
+  const root = String(settings.resourceRoot || '').trim();
+  if (root) {
+    await Promise.all(pending.map(async target => {
+      const guess = fsJoin(root, target.name);
+      const st = await fsStat(guess);
+      if (!st || !st.exists || !st.isFile) return;
+      // The folder was chosen explicitly, so a name hit is enough here; files
+      // re-exported from an editor may legitimately change size.
+      target.set(guess);
+      found++;
+    }));
+  }
+  const rest = pending.filter(x => !x.path());
+  if (search && rest.length) {
+    const dirs = [];
+    if (root) dirs.push(root);
+    for (const r of FS.roots) if (r.path && !dirs.includes(r.path)) dirs.push(r.path);
+    try {
+      const r = await fetch('/api/fs/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-TripTrail-Token': FS.token },
+        body: JSON.stringify({
+          dirs: dirs.slice(0, 8),
+          files: rest.map(x => ({ name: x.name, size: x.size || 0 })),
+        }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const matches = (j && j.matches) || {};
+        for (const target of rest) {
+          const hit = matches[target.name];
+          if (hit) { target.set(hit); found++; }
+        }
+      }
+    } catch (e) { console.warn('resource path search failed:', e); }
+  }
+  renderStops();
+  return { found, missing: pending.length - found, total: all.length };
+}
+
+async function bindAllResourcePaths() {
+  if (!(await ensureFileApi())) { toast(t('fsUnavailable'), 4200); return; }
+  if (!pathStats().total) { toast(t('pathNoResources')); return; }
+  loading(true, t('pathSearching'));
+  try {
+    const r = await resolveResourcePaths();
+    if (r.missing) toast(t('pathResolvedPartial', { found: r.found, missing: r.missing }), 5400);
+    else toast(t('pathResolvedAll', { found: r.found }));
+  } finally {
+    loading(false);
+  }
+}
+
+/* ---- small stacked modal used by the path tools ---- */
+const resModalStack = [];
+
+function paintResModal() {
+  const modal = $('#res-modal');
+  if (!modal) return;
+  const empty = resModalStack.length === 0;
+  modal.classList.toggle('hidden', empty);
+  modal.setAttribute('aria-hidden', String(empty));
+  if (empty) return;
+  const body = $('#res-modal-body');
+  const foot = $('#res-modal-foot');
+  const title = $('#res-modal-title');
+  body.innerHTML = '';
+  foot.innerHTML = '';
+  resModalStack[resModalStack.length - 1]({ body, foot, title });
+}
+
+function openResModal(render) {
+  resModalStack.push(render);
+  paintResModal();
+}
+
+function closeResModal() {
+  resModalStack.pop();
+  paintResModal();
+}
+
+function openPathDialog({ title, value = '', hint = '', onSave }) {
+  let current = String(value || '');
+  openResModal(({ body, foot, title: titleEl }) => {
+    titleEl.textContent = title || t('pathDialogTitle');
+    body.innerHTML = `
+      ${hint ? `<p class="hint">${esc(hint)}</p>` : ''}
+      <label class="field"><span>${esc(t('absPath'))}</span>
+        <input id="res-path-input" type="text" value="${esc(current)}" placeholder="${esc(t('absPathPh'))}" spellcheck="false" autocomplete="off" />
+      </label>
+      <p class="local-hint">${esc(t('absPathHint'))}</p>`;
+    const input = $('#res-path-input');
+    input.addEventListener('input', () => { current = input.value; });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); foot.querySelector('[data-act="ok"]').click(); }
+    });
+    foot.innerHTML = `
+      <button class="btn btn-ghost small" data-act="browse" type="button">${esc(t('browse'))}</button>
+      <span class="grow"></span>
+      <button class="btn btn-ghost small" data-act="clear" type="button">${esc(t('clearPath'))}</button>
+      <button class="btn btn-ghost small" data-act="cancel" type="button">${esc(t('cancel'))}</button>
+      <button class="btn btn-accent small" data-act="ok" type="button">${esc(t('apply'))}</button>`;
+    foot.querySelector('[data-act="browse"]').onclick = async () => {
+      if (!(await ensureFileApi())) { toast(t('fsUnavailable'), 4200); return; }
+      if (!resModalStack.length) return;
+      openFileBrowser(current, p => { current = p; }, 'file');
+    };
+    foot.querySelector('[data-act="clear"]').onclick = () => { closeResModal(); onSave(''); };
+    foot.querySelector('[data-act="cancel"]').onclick = closeResModal;
+    foot.querySelector('[data-act="ok"]').onclick = () => {
+      const next = cleanPathInput(current);
+      closeResModal();
+      onSave(next);
+    };
+  });
+}
+
+function openFileBrowser(startDir, onPick, mode = 'file') {
+  let dir = String(startDir || '');
+  let selected = '';
+  openResModal(({ body, foot, title }) => {
+    title.textContent = mode === 'dir' ? t('browseTitleDir') : t('browseTitleFile');
+    body.innerHTML = `
+      <div class="browse-bar">
+        <button class="btn btn-ghost small" data-act="up" type="button" title="${esc(t('browseUp'))}">${svgIcon('up')}</button>
+        <input id="browse-dir" type="text" value="${esc(dir)}" placeholder="${esc(t('absPathPh'))}" spellcheck="false" autocomplete="off" />
+        <button class="btn btn-ghost small" data-act="go" type="button">${esc(t('browseGo'))}</button>
+      </div>
+      <div id="browse-list" class="browse-list"><div class="browse-empty">${esc(t('working'))}</div></div>`;
+    foot.innerHTML = `
+      <span class="browse-picked" id="browse-picked">${selected ? esc(selected) : ''}</span>
+      <span class="grow"></span>
+      <button class="btn btn-ghost small" data-act="cancel" type="button">${esc(t('cancel'))}</button>
+      <button class="btn btn-accent small" data-act="choose" type="button">${esc(mode === 'dir' ? t('browsePickFolder') : t('browseChoose'))}</button>`;
+
+    const list = $('#browse-list');
+    const dirInput = $('#browse-dir');
+    const picked = $('#browse-picked');
+    const chooseBtn = foot.querySelector('[data-act="choose"]');
+
+    const setSelected = p => {
+      selected = p;
+      picked.textContent = p;
+      list.querySelectorAll('.browse-row.file').forEach(row => row.classList.toggle('sel', row.dataset.path === p));
+    };
+
+    const choose = () => {
+      const p = mode === 'dir' ? dir : selected;
+      if (!p) { toast(mode === 'dir' ? t('browseNoFolder') : t('browseNoFile')); return; }
+      onPick(p);
+      closeResModal();
+    };
+    chooseBtn.onclick = choose;
+    foot.querySelector('[data-act="cancel"]').onclick = closeResModal;
+
+    const load = async target => {
+      list.innerHTML = `<div class="browse-empty">${esc(t('working'))}</div>`;
+      let data;
+      try { data = await fsList(target); }
+      catch {
+        list.innerHTML = `<div class="browse-empty">${esc(t('browseFailed'))}</div>`;
+        return;
+      }
+      dir = data.path || '';
+      selected = '';
+      picked.textContent = '';
+      dirInput.value = dir;
+      chooseBtn.disabled = mode === 'dir' ? !dir : true;
+      const rows = [];
+      for (const r of data.roots || []) rows.push({ name: fsRootLabel(r), path: r.path, dir: true, sub: r.path });
+      for (const e of data.entries || []) rows.push(e);
+      if (!rows.length) {
+        list.innerHTML = `<div class="browse-empty">${esc(t('browseNothing'))}</div>`;
+        return;
+      }
+      list.innerHTML = rows.map(e => `
+        <div class="browse-row ${e.dir ? 'dir' : 'file'}" data-path="${esc(e.path)}" data-dir="${e.dir ? '1' : ''}">
+          <span class="brow-ic">${svgIcon(e.dir ? 'folder' : 'file')}</span>
+          <span class="name">${esc(e.name)}</span>
+          <span class="meta">${esc(e.dir ? (e.sub || '') : formatSize(e.size))}</span>
+        </div>`).join('');
+      list.querySelectorAll('.browse-row').forEach(row => {
+        row.onclick = () => {
+          if (row.dataset.dir) { load(row.dataset.path); return; }
+          setSelected(row.dataset.path);
+          if (mode === 'file') chooseBtn.disabled = false;
+        };
+        row.ondblclick = () => {
+          if (row.dataset.dir) load(row.dataset.path);
+          else { setSelected(row.dataset.path); choose(); }
+        };
+      });
+    };
+
+    body.querySelector('[data-act="up"]').onclick = () => load('');
+    body.querySelector('[data-act="go"]').onclick = () => {
+      const p = dirInput.value.trim();
+      load(p);
+    };
+    dirInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); load(dirInput.value.trim()); }
+    });
+    load(dir);
+  });
+}
+
+/* ---- per-resource bind dialog ---- */
+function openMediaPathDialog(media) {
+  if (!media) return;
+  if (!FS.enabled) { toast(t('fsUnavailable'), 4200); return; }
+  openPathDialog({
+    title: t('mediaPathTitle', { name: media.name || '' }),
+    value: media.path || '',
+    hint: t('mediaPathHint'),
+    onSave: async p => {
+      media.path = p;
+      if (!p) { toast(t('mediaPathCleared')); renderStops(); return; }
+      const st = await fsStat(p);
+      if (!st || !st.exists || !st.isFile) { toast(t('mediaPathInvalid'), 4200); renderStops(); return; }
+      media.size = st.size || media.size || 0;
+      toast(t('mediaPathSet'));
+      renderStops();
+    },
+  });
+}
+
+function openIconPathDialog(stop) {
+  if (!stop || !stop.icon) return;
+  if (!FS.enabled) { toast(t('fsUnavailable'), 4200); return; }
+  openPathDialog({
+    title: t('iconPathTitle', { name: stop.icon.name || '' }),
+    value: stop.icon.path || '',
+    hint: t('iconPathHint'),
+    onSave: async p => {
+      if (!stop.icon) return;
+      stop.icon.path = p;
+      if (!p) { toast(t('mediaPathCleared')); renderStops(); return; }
+      const st = await fsStat(p);
+      if (!st || !st.exists || !st.isFile) { toast(t('mediaPathInvalid'), 4200); renderStops(); return; }
+      stop.icon.sizeBytes = st.size || stop.icon.sizeBytes || 0;
+      toast(t('mediaPathSet'));
+      renderStops();
+    },
+  });
+}
+
+function openMusicPathDialog() {
+  if (!FS.enabled) { toast(t('fsUnavailable'), 4200); return; }
+  openPathDialog({
+    title: t('musicPathTitle', { name: musicFileName || '' }),
+    value: musicPath || '',
+    hint: t('musicPathHint'),
+    onSave: async p => {
+      musicPath = p;
+      if (!p) { toast(t('mediaPathCleared')); return; }
+      const st = await fsStat(p);
+      if (st && st.exists && st.size) musicSize = st.size;
+      toast(t('mediaPathSet'));
+    },
+  });
+}
+
+async function pickResourceRoot() {
+  if (!(await ensureFileApi())) { toast(t('fsUnavailable'), 4200); return; }
+  openFileBrowser(settings.resourceRoot, p => {
+    settings.resourceRoot = p;
+    const input = $('#inp-resource-root');
+    if (input) input.value = p;
+    savePrefs();
+    updatePathStatus();
+    toast(t('resourceRootSet'));
+  }, 'dir');
+}
+
+function clearMusic() {
+  const m = $('#music');
+  try { m.pause(); m.removeAttribute('src'); m.load(); } catch { /* ignore */ }
+  musicFileName = '';
+  musicPath = '';
+  musicSize = 0;
+  $('#music-name').textContent = t('none');
+  $('#btn-music-clear').classList.add('hidden');
+  const pathBtn = $('#btn-music-path');
+  if (pathBtn) pathBtn.classList.add('hidden');
+  updatePathStatus();
+}
+
 function configPayload() {
   syncSettingsFromUI();
   return {
     schema: 'triptrail',
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     settings: {
       region: settings.region, style: settings.style, aspect: settings.aspect,
@@ -1793,119 +2435,222 @@ function configPayload() {
       pace: settings.pace, mediaInterval: settings.mediaInterval, mediaRatio: settings.mediaRatio,
       title: settings.title, subtitle: settings.subtitle, watermark: settings.watermark,
       format: settings.format, quality: settings.quality,
+      resourceRoot: settings.resourceRoot || '',
+      music: musicFileName ? { name: musicFileName, path: musicPath || '' } : null,
     },
     stops: stops.map(s => ({
       name: s.name, nameZh: s.nameZh || '', nameEn: s.nameEn || '',
       lng: s.lng, lat: s.lat, mode: s.mode || 'plane',
       mediaInterval: s.mediaInterval || null,
       icon: serializeIcon(s.icon),
-      mediaMeta: (s.media || []).map(m => ({ kind: m.kind, name: m.name, width: m.width, height: m.height, duration: m.duration || 0 })),
+      // Absolute-path links in carousel order: the saved order is the play order.
+      // Entries that could not be reopened when the config was loaded stay in
+      // `missingMedia` (at the end) so a save never silently drops a link.
+      media: [
+        ...(s.media || []).map(m => ({
+          kind: m.kind, name: m.name || '', path: m.path || '',
+          width: Math.round(Number(m.width) || 0), height: Math.round(Number(m.height) || 0),
+          duration: Math.round(Number(m.duration) || 0), size: Math.round(Number(m.size) || 0),
+          posterPath: m.posterPath || '',
+        })),
+        ...(s.missingMedia || []).map(entry => ({
+          kind: entry.kind || 'image', name: entry.name || '', path: entry.path || '',
+          width: Math.round(Number(entry.width) || 0), height: Math.round(Number(entry.height) || 0),
+          duration: Math.round(Number(entry.duration) || 0), size: Math.round(Number(entry.size) || 0),
+          posterPath: entry.posterPath || '',
+        })),
+      ],
     })),
     customPlaces: customPlaces.map(p => ({ name: p.name, lng: p.lng, lat: p.lat })),
   };
 }
 
-function saveConfigFile() {
-  const data = configPayload();
-  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `triptrail-${stamp}.triptrail.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  toast(t('configSaved'));
+async function saveConfigFile() {
+  loading(true, t('configSaving'));
+  try {
+    syncSettingsFromUI();
+    // Best effort: fill in the absolute path of resources that were added
+    // before a resource folder was chosen.
+    let missing = 0;
+    const stats = pathStats();
+    if (stats.linked < stats.total) {
+      if (FS.enabled) missing = (await resolveResourcePaths()).missing;
+      else missing = stats.total - stats.linked;
+    }
+    const data = configPayload();
+    const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `triptrail-${stamp}.triptrail.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    if (missing) toast(t('configSavedPartial', { n: missing }), 6000);
+    else toast(t('configSaved'));
+  } finally {
+    loading(false);
+  }
 }
 
-function loadConfigFile(file) {
-  const rd = new FileReader();
-  rd.onload = () => {
-    try {
-      const cfg = JSON.parse(String(rd.result).replace(/^\uFEFF/, ''));
-      if (!cfg || !Array.isArray(cfg.stops)) throw new Error('bad config');
-      if (anim.playing) stopPlay();
-      const s = cfg.settings || {};
-      settings.title = typeof s.title === 'string' ? s.title : t('defaultTitle');
-      settings.subtitle = typeof s.subtitle === 'string' ? s.subtitle : t('defaultSubtitle');
-      settings.accent = /^#[0-9a-f]{6}$/i.test(s.accent || '') ? s.accent : settings.accent;
-      settings.aspect = ['16:9', '9:16', '1:1', '4:5'].includes(s.aspect) ? s.aspect : settings.aspect;
-      settings.region = s.region === 'global' ? 'global' : 'cn';
-      settings.style = typeof s.style === 'string' ? s.style : settings.style;
-      settings.globe = !!s.globe;
-      settings.pitch = !!s.pitch;
-      settings.labels = s.labels !== false;
-      settings.cities = s.cities !== false;
-      settings.borders = s.borders !== false;
-      settings.cityLevel = ['auto', '1', '2', '3'].includes(String(s.cityLevel)) ? String(s.cityLevel) : 'auto';
-      settings.roads = s.roads !== false;
-      settings.glow = s.glow !== false;
-      settings.pace = clamp(Number(s.pace) || 1, 0.4, 2.2);
-      settings.mediaInterval = clamp(Number(s.mediaInterval) || 3, 1, 10);
-      settings.mediaRatio = MEDIA_RATIOS.includes(s.mediaRatio) ? s.mediaRatio : 'original';
-      settings.watermark = typeof s.watermark === 'string' ? s.watermark : '';
-      settings.format = s.format === 'webm' ? 'webm' : 'mp4';
-      settings.quality = Number(s.quality) === 2 ? 2 : 1;
+function readTextFile(file) {
+  return new Promise((resolve, reject) => {
+    const rd = new FileReader();
+    rd.onload = () => resolve(String(rd.result));
+    rd.onerror = () => reject(rd.error || new Error('read failed'));
+    rd.readAsText(file);
+  });
+}
 
-      disposeAllMedia();
-      stops = cfg.stops
-        .filter(x => x && Number.isFinite(Number(x.lng)) && Number.isFinite(Number(x.lat)))
-        .slice(0, 100)
-        .map(x => ({
+async function loadConfigFile(file) {
+  try {
+    const cfg = JSON.parse((await readTextFile(file)).replace(/^\uFEFF/, ''));
+    if (!cfg || !Array.isArray(cfg.stops)) throw new Error('bad config');
+    if (anim.playing) stopPlay();
+    await probeFileApi();
+    const s = cfg.settings || {};
+    settings.title = typeof s.title === 'string' ? s.title : t('defaultTitle');
+    settings.subtitle = typeof s.subtitle === 'string' ? s.subtitle : t('defaultSubtitle');
+    settings.accent = /^#[0-9a-f]{6}$/i.test(s.accent || '') ? s.accent : settings.accent;
+    settings.aspect = ['16:9', '9:16', '1:1', '4:5'].includes(s.aspect) ? s.aspect : settings.aspect;
+    settings.region = s.region === 'global' ? 'global' : 'cn';
+    settings.style = typeof s.style === 'string' ? s.style : settings.style;
+    settings.globe = !!s.globe;
+    settings.pitch = !!s.pitch;
+    settings.labels = s.labels !== false;
+    settings.cities = s.cities !== false;
+    settings.borders = s.borders !== false;
+    settings.cityLevel = ['auto', '1', '2', '3'].includes(String(s.cityLevel)) ? String(s.cityLevel) : 'auto';
+    settings.roads = s.roads !== false;
+    settings.glow = s.glow !== false;
+    settings.pace = clamp(Number(s.pace) || 1, 0.4, 2.2);
+    settings.mediaInterval = clamp(Number(s.mediaInterval) || 3, 1, 10);
+    settings.mediaRatio = MEDIA_RATIOS.includes(s.mediaRatio) ? s.mediaRatio : 'original';
+    settings.watermark = typeof s.watermark === 'string' ? s.watermark : '';
+    settings.format = s.format === 'webm' ? 'webm' : 'mp4';
+    settings.quality = Number(s.quality) === 2 ? 2 : 1;
+    if (typeof s.resourceRoot === 'string' && fsIsAbsolute(s.resourceRoot)) settings.resourceRoot = s.resourceRoot;
+    savePrefs();
+
+    disposeAllMedia();
+    const pending = [];
+    stops = cfg.stops
+      .filter(x => x && Number.isFinite(Number(x.lng)) && Number.isFinite(Number(x.lat)))
+      .slice(0, 100)
+      .map(x => {
+        const stop = {
           id: id(), name: String(x.name || x.nameZh || x.nameEn || `${x.lat}, ${x.lng}`),
           nameZh: x.nameZh || '', nameEn: x.nameEn || '',
           lng: Number(x.lng), lat: Number(x.lat), mode: MODES[x.mode] ? x.mode : 'plane',
           mediaInterval: Number(x.mediaInterval) > 0 ? Number(x.mediaInterval) : null,
           media: [],
+          missingMedia: [],
           icon: deserializeIcon(x.icon),
-        }));
+        };
+        if (Array.isArray(x.media) && x.media.length) pending.push({ stop, entries: x.media });
+        return stop;
+      });
 
-      if (Array.isArray(cfg.customPlaces)) {
-        for (const p of cfg.customPlaces) {
-          const n = String(p.name || '').trim();
-          const lng = Number(p.lng), lat = Number(p.lat);
-          if (!n || !Number.isFinite(lng) || !Number.isFinite(lat)) continue;
-          if (customPlaces.some(c => normalizeQuery(c.name) === normalizeQuery(n) && Math.abs(c.lng - lng) < 1e-5 && Math.abs(c.lat - lat) < 1e-5)) continue;
-          customPlaces.push({ id: id(), name: n, en: n, pinyin: '', lng, lat, kind: 'custom' });
+    // Re-open every linked file through the local file service, in the saved
+    // carousel order.
+    let restored = 0;
+    let missing = 0;
+    if (pending.length) {
+      if (FS.enabled) {
+        loading(true, t('configRestoringMedia'));
+        try {
+          for (const job of pending) {
+            for (const entry of job.entries) {
+              if (!entry || typeof entry !== 'object') { missing++; continue; }
+              if (!entry.path || !fsIsAbsolute(String(entry.path))) {
+                job.stop.missingMedia.push(entry);
+                missing++;
+                continue;
+              }
+              try {
+                const media = await mediaFromPath(entry);
+                if (media) { job.stop.media.push(media); restored++; }
+                else { job.stop.missingMedia.push(entry); missing++; }
+              } catch (e) {
+                console.warn('media restore failed:', e);
+                job.stop.missingMedia.push(entry);
+                missing++;
+              }
+            }
+          }
+        } finally {
+          loading(false);
         }
-        saveCustomPlaces();
-        rebuildPlaceIndex();
-        renderCustomPlaces();
+      } else {
+        for (const job of pending) job.stop.missingMedia = job.entries.slice();
+        missing = pending.reduce((n, job) => n + job.entries.length, 0);
       }
-
-      $('#inp-title').value = settings.title;
-      $('#inp-subtitle').value = settings.subtitle;
-      $('#inp-title').dataset.edited = '1';
-      $('#inp-subtitle').dataset.edited = '1';
-      $('#inp-accent').value = settings.accent;
-      document.documentElement.style.setProperty('--accent', settings.accent);
-      $('#rng-pace').value = String(settings.pace);
-      $('#rng-media-interval').value = String(settings.mediaInterval);
-      $('#sel-media-ratio').value = settings.mediaRatio;
-      $('#inp-watermark').value = settings.watermark;
-      $('#sel-aspect').value = settings.aspect;
-      $('#sel-format').value = settings.format;
-      $('#sel-quality').value = String(settings.quality);
-      applyInitialControls();
-      $('#pace-val').textContent = paceLabel();
-      updateMediaIntervalLabel();
-      layoutStage();
-      if (map) {
-        map.setStyle(styleSpec(settings.style), { diff: false });
-        setRegion(settings.region, false);
-        applyProjection();
-        map.easeTo({ pitch: settings.pitch ? 50 : 0, duration: 400 });
-      }
-      afterStopsChange();
-      toast(t('configLoaded', { n: stops.length }));
-      if (cfg.stops.some(x => Array.isArray(x.mediaMeta) && x.mediaMeta.length)) {
-        setTimeout(() => toast(t('configMediaLost'), 4200), 1800);
-      }
-    } catch (e) {
-      console.warn('config load failed', e);
-      toast(t('configInvalid'));
     }
-  };
-  rd.readAsText(file);
+    const legacyMeta = cfg.stops.some(x => Array.isArray(x.mediaMeta) && x.mediaMeta.length);
+
+    // Background music is a link as well.
+    const mus = s.music && typeof s.music === 'object' ? s.music : null;
+    if (mus && mus.path && FS.enabled && fsIsAbsolute(String(mus.path))) {
+      musicFileName = String(mus.name || pathBaseName(String(mus.path)));
+      musicPath = String(mus.path);
+      musicSize = 0;
+      const el = $('#music');
+      el.src = fsFileUrl(musicPath);
+      el.load();
+      $('#music-name').textContent = musicFileName;
+      $('#btn-music-clear').classList.remove('hidden');
+      const musPathBtn = $('#btn-music-path');
+      if (musPathBtn) musPathBtn.classList.remove('hidden');
+    } else if (musicFileName) {
+      clearMusic();
+    }
+
+    if (Array.isArray(cfg.customPlaces)) {
+      for (const p of cfg.customPlaces) {
+        const n = String(p.name || '').trim();
+        const lng = Number(p.lng), lat = Number(p.lat);
+        if (!n || !Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+        if (customPlaces.some(c => normalizeQuery(c.name) === normalizeQuery(n) && Math.abs(c.lng - lng) < 1e-5 && Math.abs(c.lat - lat) < 1e-5)) continue;
+        customPlaces.push({ id: id(), name: n, en: n, pinyin: '', lng, lat, kind: 'custom' });
+      }
+      saveCustomPlaces();
+      rebuildPlaceIndex();
+      renderCustomPlaces();
+    }
+
+    $('#inp-title').value = settings.title;
+    $('#inp-subtitle').value = settings.subtitle;
+    $('#inp-title').dataset.edited = '1';
+    $('#inp-subtitle').dataset.edited = '1';
+    $('#inp-accent').value = settings.accent;
+    document.documentElement.style.setProperty('--accent', settings.accent);
+    $('#rng-pace').value = String(settings.pace);
+    $('#rng-media-interval').value = String(settings.mediaInterval);
+    $('#sel-media-ratio').value = settings.mediaRatio;
+    $('#inp-watermark').value = settings.watermark;
+    $('#sel-aspect').value = settings.aspect;
+    $('#sel-format').value = settings.format;
+    $('#sel-quality').value = String(settings.quality);
+    applyInitialControls();
+    $('#pace-val').textContent = paceLabel();
+    updateMediaIntervalLabel();
+    layoutStage();
+    if (map) {
+      map.setStyle(styleSpec(settings.style), { diff: false });
+      setRegion(settings.region, false);
+      applyProjection();
+      map.easeTo({ pitch: settings.pitch ? 50 : 0, duration: 400 });
+    }
+    afterStopsChange();
+    toast(t('configLoaded', { n: stops.length }));
+    if (restored) setTimeout(() => toast(t('configMediaRestored', { n: restored }), 4600), 1200);
+    if (missing) setTimeout(() => toast(t('configMediaMissing', { n: missing }), 5200), restored ? 3000 : 1400);
+    else if (legacyMeta && !pending.length) setTimeout(() => toast(t('configMediaLost'), 4200), 1800);
+    updatePathStatus();
+  } catch (e) {
+    console.warn('config load failed', e);
+    loading(false);
+    toast(t('configInvalid'));
+  }
 }
 
 /* ---- offline China place index + online fallback ---- */
@@ -3354,6 +4099,8 @@ function syncSettingsFromUI() {
   settings.globe = $('#chk-globe').checked;
   settings.format = $('#sel-format').value;
   settings.quality = parseInt($('#sel-quality').value, 10);
+  const rootInput = $('#inp-resource-root');
+  if (rootInput) settings.resourceRoot = cleanPathInput(rootInput.value);
 }
 
 /* ============================================================ language + region */
@@ -3480,9 +4227,12 @@ function applyInitialControls() {
   $('#chk-glow').checked = !!settings.glow;
   $('#rng-media-interval').value = String(settings.mediaInterval || 3);
   $('#sel-media-ratio').value = settings.mediaRatio;
+  const rootInput = $('#inp-resource-root');
+  if (rootInput) rootInput.value = settings.resourceRoot || '';
   $('#pace-val').textContent = paceLabel();
   updateMediaIntervalLabel();
   updateRegionUI(false);
+  updatePathStatus();
 }
 
 function wire() {
@@ -3524,6 +4274,19 @@ function wire() {
     const f = e.target.files[0]; e.target.value = '';
     if (f) loadConfigFile(f);
   };
+  $('#inp-resource-root').addEventListener('input', e => {
+    settings.resourceRoot = cleanPathInput(e.target.value);
+    savePrefs();
+  });
+  $('#btn-pick-root').onclick = pickResourceRoot;
+  $('#btn-resolve-paths').onclick = bindAllResourcePaths;
+  $('#res-modal-x').onclick = closeResModal;
+  $('#res-modal').addEventListener('click', e => {
+    if (e.target === $('#res-modal')) closeResModal();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && resModalStack.length) closeResModal();
+  });
 
   $('#btn-lang').onclick = () => {
     LANG = LANG === 'zh' ? 'en' : 'zh';
@@ -3580,20 +4343,29 @@ function wire() {
   };
 
   $('#btn-music').onclick = () => $('#file-music').click();
-  $('#file-music').onchange = e => {
+  $('#file-music').onchange = async e => {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
     musicFileName = f.name;
+    musicSize = f.size || 0;
+    musicPath = '';
     $('#music').src = URL.createObjectURL(f);
     $('#music-name').textContent = f.name;
     $('#btn-music-clear').classList.remove('hidden');
+    $('#btn-music-path').classList.remove('hidden');
+    // Link the track to the file on disk when the resource folder is known.
+    if (settings.resourceRoot) {
+      const guess = fsJoin(settings.resourceRoot, f.webkitRelativePath || f.name);
+      const st = await fsStat(guess);
+      if (st && st.exists && st.isFile && (!st.size || !musicSize || Math.abs(st.size - musicSize) <= 2)) {
+        musicPath = guess;
+        musicSize = st.size || musicSize;
+      }
+    }
+    updatePathStatus();
   };
-  $('#btn-music-clear').onclick = () => {
-    const m = $('#music'); m.pause(); m.removeAttribute('src'); m.load();
-    musicFileName = '';
-    $('#music-name').textContent = t('none');
-    $('#btn-music-clear').classList.add('hidden');
-  };
+  $('#btn-music-path').onclick = openMusicPathDialog;
+  $('#btn-music-clear').onclick = () => clearMusic();
 
   $('#btn-play').onclick = () => play(false);
   $('#btn-record').onclick = () => { $('#btn-download').classList.add('hidden'); play(true); };
@@ -3671,6 +4443,7 @@ function wire() {
 /* ============================================================ boot */
 function boot() {
   window.addEventListener('unhandledrejection', e => console.warn('unhandled rejection:', e.reason));
+  probeFileApi();
   applyLanguage(true);
   settings.title = $('#inp-title').value;
   settings.subtitle = $('#inp-subtitle').value;
