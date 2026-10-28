@@ -24,27 +24,28 @@
 
 ### 项目简介
 
-TripTrail 是一个纯前端的旅行地图动画工作室：搜索/选择途经点，配置路线、照片、视频和交通工具图标，然后预览或导出带镜头运动的旅行地图视频。
+TripTrail 是一个纯前端的旅行地图动画工作室：选择途经点，配置路线、照片、视频、交通工具图标和每段路程时长，然后预览或导出带镜头运动的旅行地图视频。
 
-本仓库在 [Fangyuan025/triptrail](https://github.com/Fangyuan025/triptrail) 基础上做了大量中文本地化与中国地图增强，并加入了自定义地点、多媒体轮播和交通工具图标等功能。
+本仓库在 [Fangyuan025/triptrail](https://github.com/Fangyuan025/triptrail) 基础上做了大量中文本地化、中国地图增强和编辑功能扩展。
 
 ### 本版修改/新增功能
 
-- **中文优先界面 + 中英文切换**：默认中文，右上角 `EN / 中` 一键切换。标题、按钮、提示、路线字幕、途经点、城市标注、图标设置都会跟随语言。
-- **中国模式**：默认锁定中国范围，使用高德中文底图、中国省/市/区县边界、本地城市库和分级城市标注；也可以切回全球模式。
+- **中文优先界面 + 中英文切换**：默认中文，右上角 `EN / 中` 一键切换。标题、按钮、路线字幕、途经点、城市标注和图标设置都会跟随语言。
+- **中国模式**：锁定中国范围，使用高德中文底图、中国省/市/区县边界、本地城市库和分级城市标注；可切回全球模式。
 - **9 种地图样式**：高德中文路网、高德卫星、Esri 卫星、Voyager、Eclipse、Dark Matter、Liberty、Fiord、Positron。
-- **离线中国地点库**：3,200 个城市/区县 + 522 个景点，支持中文、拼音、英文搜索，如 `杭州`、`hangzhou`、`西湖`、`故宫`、`鹿回头`。城市搜索在断网时仍可用。
-- **城市分级显示**：省会/直辖市 → 地级市 → 区县随缩放逐级出现，支持“自动分级 / 仅省会 / 省会+地级市 / 全部”四档。
-- **途经点始终置顶**：城市标注之下的所有途经点始终显示，并在导出的视频中保留。
+- **离线中国地点库**：3,200 个城市/区县 + 522 个景点，支持中文、拼音、英文搜索，如 `杭州`、`hangzhou`、`西湖`、`故宫`、`鹿回头`。
+- **城市分级显示**：省会/直辖市 → 地级市 → 区县随缩放逐级出现，可选“自动分级 / 仅省会 / 省会+地级市 / 全部”。
+- **途经点始终置顶**：城市标注之上始终绘制所有途经点，预览和导出视频中都保留。
 - **自定义地点完整增删改查**：输入名称、经纬度落点；列表支持编辑、删除、搜索；修改地点时关联途经点同步更新。
-- **自定义地点 JSON**：以 UTF-8 明文保存/加载 `.json`，支持合并或覆盖，兼容 `places` 对象、纯数组和 UTF-8 BOM。
-- **项目配置文件（绝对路径链接）**：保存/载入 `.triptrail.json`，包含标题、途经点、交通方式、图标、地图与媒体设置；照片、视频、GIF、图标和背景音乐以**绝对路径链接**记录，载入时由本地服务按路径自动恢复，配置文件本身不写入文件内容。
-- **停靠点多媒体系列**：每个途经点支持多张图片、GIF、视频、Live Photo 混排；卡片叠放，播放完成后开始切换。
-- **媒体拖动排序**：途经点下方的媒体缩略图可直接左右拖动，调整轮播与导出顺序，顺序随项目配置一起保存。
-- **动态媒体完整播放**：GIF/视频/Live 时长超过设定间隔时，自动延长当前卡片直到播放完成；静态图片仍按间隔。
+- **自定义地点 JSON**：UTF-8 明文保存/加载，支持合并或覆盖，兼容 `places` 对象、纯数组和 UTF-8 BOM。
+- **项目配置文件（绝对路径链接）**：保存/载入 `.triptrail.json`，包含标题、途经点、交通方式、**每段路程时长**、图标、地图与媒体设置；照片、视频、GIF、图标和音乐以**绝对路径链接**记录，载入时由本地服务恢复。
+- **每段路程独立时长**：每段交通可填写 1–120 秒的精确时长；留空时按距离和节奏自动计算。
+- **停靠点多媒体系列**：每个途经点支持多张图片、GIF、视频、Live Photo 混排；卡片叠放并在播放完成后切换。
+- **媒体拖动排序**：途经点下方的媒体缩略图可左右拖动调整轮播与导出顺序，顺序随配置保存。
+- **动态媒体完整播放**：GIF/视频/Live 时长超过媒体间隔时自动延长到播放结束；静态图片仍按间隔。
 - **媒体比例**：支持“每张原始比例”或统一 3:2 / 4:3 / 16:9 / 1:1 / 3:4。
-- **GIF/视频修复**：GIF 用 `ImageDecoder` 逐帧解码；视频与 Live 绘制到动画画布。含视频的行程自动使用实时录制保证同步。
-- **每段交通工具图标**：支持透明 PNG、SVG、JPG、ICO、GIF（循环）和 Emoji；可设置大小（16–140 px）、原始朝向、东西向自动翻转和路线切线旋转。
+- **GIF/视频修复**：GIF 用 `ImageDecoder` 逐帧解码；视频/Live 绘制到动画画布。含视频的行程自动用实时录制保证同步。
+- **每段交通工具图标**：支持透明 PNG、SVG、JPG、ICO、GIF（循环）和 Emoji；可设置 16–140 px 大小、原始朝向、东西向自动翻转和路线切线旋转。
 - **本地核心依赖**：MapLibre GL 与 MP4 muxer 放入 `vendor/`；零依赖 Node 静态服务器。
 
 ### 快速开始
@@ -65,23 +66,30 @@ npm start
 $env:PORT=8743; npm start
 ```
 
-不要用 `file://` 直接打开页面；地图和 JSON 数据需要 HTTP 服务。
+不要用 `file://` 直接打开页面；地图、JSON 数据和本地资源接口都需要 `npm start` 提供的 HTTP 服务。
 
 ### 使用流程
 
-1. 在“地图区域”选择 **中国模式** 或 **全球模式**。
+1. 选择 **中国模式** 或 **全球模式**。
 2. 搜索城市、区县、景点，或点击地图落点；展开“自定义地点（增删改查）”可管理常用地点。
-3. 点击途经点右侧相机按钮添加图片/GIF/视频；同名 JPG/PNG + MOV/MP4 自动配成 Live Photo。缩略图可左右拖动调整播放顺序，点击左上角链条按钮可绑定原文件的绝对路径。
-4. 在交通方式下方设置该段的交通工具图标、大小、朝向、自动翻转/切线旋转。
-5. 在“路线生成”输入整段行程，或导入 GPX/KML/GeoJSON。
-6. 在“外观”调整地图、比例、主题色、节奏、媒体停留和媒体比例。
-7. 点“预览”检查，点“录制视频”导出 MP4/WebM。
+3. 在每段交通方式下方填写 **路段时长**：留空自动，填写 1–120 秒则精确使用该时长。
+4. 点击途经点相机按钮添加图片/GIF/视频；同名 JPG/PNG + MOV/MP4 自动配成 Live Photo；缩略图可拖动排序。
+5. 在交通方式下方设置该段的交通工具图标、大小、朝向、自动翻转/切线旋转。
+6. 在“路线生成”输入整段行程，或导入 GPX/KML/GeoJSON。
+7. 在“外观”调整地图、画面比例、主题色、节奏、媒体停留和媒体比例。
+8. 点“预览”检查，点“录制视频”导出 MP4/WebM。
 
 > 录制 MP4 使用浏览器 WebCodecs，建议最新版 Chrome / Edge，并在录制时保持页面可见。
->
-> 含视频/Live 的行程会自动改用实时录制；纯图片/GIF 走逐帧离线渲染。
 
-### 交通工具图标说明
+### 路段时长
+
+每段路程有独立输入框：
+
+- 留空：沿用原来的自动算法，按路线距离和全局“节奏”计算。
+- 填写：该段精确使用 `1–120` 秒，不再受全局节奏影响。
+- 时长只作用于 travel 段；起始接近、到站停顿、照片/视频停留保持各自设定。
+
+### 交通工具图标
 
 - **原始朝向**：朝右 / 朝左 / 朝上，用于描述素材本身的车头方向。
 - **东西向自动翻转**：关闭旋转时生效；整体东行朝右、西行朝左，南北向不强行翻转。
@@ -89,7 +97,7 @@ $env:PORT=8743; npm start
 
 ### 自定义地点 JSON
 
-“保存地点 JSON”生成可直接编辑的 UTF-8 纯文本文件：
+“保存地点 JSON”会生成可直接编辑的 UTF-8 纯文本文件：
 
 ```json
 {
@@ -106,40 +114,42 @@ $env:PORT=8743; npm start
 
 ### 资源文件与绝对路径
 
-项目配置里的照片、视频、GIF、交通工具图标和背景音乐都只保存**绝对路径链接**，不写入文件内容：
+从 v1.6 开始，项目配置里的照片、视频、GIF、交通工具图标和背景音乐保存为**绝对路径链接**，不写入文件内容：
 
 ```json
 {
   "schema": "triptrail",
   "version": 2,
   "settings": {
-    "resourceRoot": "C:\\Users\\你\\Pictures\\云南行",
-    "music": { "name": "主题曲.mp3", "path": "C:\\Users\\你\\Music\\主题曲.mp3" }
+    "resourceRoot": "C:\\Users\\you\\Pictures\\Yunnan",
+    "music": { "name": "theme.mp3", "path": "C:\\Users\\you\\Music\\theme.mp3" }
   },
   "stops": [
     {
       "name": "西湖",
+      "legDuration": 4.5,
       "media": [
-        { "kind": "image", "name": "1.jpg", "path": "C:\\Users\\你\\Pictures\\云南行\\1.jpg", "width": 4032, "height": 3024 },
-        { "kind": "video", "name": "2.mp4", "path": "C:\\Users\\你\\Pictures\\云南行\\2.mp4" }
-      ],
-      "icon": { "kind": "image", "name": "train.png", "path": "C:\\Users\\你\\Pictures\\云南行\\train.png" }
+        {
+          "kind": "image",
+          "name": "1.jpg",
+          "path": "C:\\Users\\you\\Pictures\\Yunnan\\1.jpg"
+        }
+      ]
     }
   ]
 }
 ```
 
-- **资源文件夹**：在“项目配置”里选择一次照片/视频所在的绝对路径。之后从该文件夹添加的媒体、图标和音乐会自动记录绝对路径。
-- **补全资源路径**：没有设置文件夹也能用。会先查资源文件夹，再查本机常用目录（图片、视频、音乐、桌面、下载、文档），按**文件名 + 文件大小**匹配。
-- **手动绑定**：媒体缩略图左上角的链条按钮、图标设置里的“路径”、背景音乐的“绑定路径”都可以手动填写或浏览选择绝对路径；绿色表示已记录，橙色表示缺失。
-- **载入与丢失**：载入配置时按路径重新打开文件；文件被移动或删除的条目会保留在配置里（不会静默丢弃），文件接回后再次载入即可恢复。
-- **本地只读接口**：浏览器不允许网页读取所选文件的绝对路径，因此由 `server.mjs` 提供只读的 `/api/fs/*` 接口（列目录、按绝对路径读文件，支持 Range 以便视频拖动进度）。接口只在 `127.0.0.1` 上生效，需要每次启动随机生成的 token，并且只允许图片/视频/音频/图标等扩展名。
-- **仅静态托管时**：如果没有用 `npm start` 启动，路径仍会写进配置，但载入时无法自动读取文件，需要重新添加；页面会给出提示。
+- **资源文件夹**：在“项目配置”里选择一次资源目录；之后从该目录添加的媒体、图标和音乐会自动记录绝对路径。
+- **按名称+大小补全**：没有资源目录时，应用会在常用目录（图片、视频、音乐、桌面、下载、文档）中按文件名和大小查找。
+- **手动绑定**：媒体缩略图的链条按钮、图标“路径”按钮和音乐“绑定路径”都支持手填或浏览选择绝对路径；绿色已链接，橙色缺失。
+- **本地只读服务**：`server.mjs` 提供仅监听 `127.0.0.1` 的只读 `/api/fs/*` 接口，支持 Range（视频拖动进度），每次启动生成随机 token，并限制媒体/图标/音乐扩展名。
+- **纯静态托管限制**：不通过 `npm start` 运行时，路径仍可写入配置，但载入时无法自动重新打开文件，界面会提示。
 
 ### 路线真实性
 
 - **汽车、大巴、房车、摩托、自行车、步行**：使用 OSRM 真实道路网络。
-- **火车/高铁**：当前沿地面走廊生成，**不是铁路轨道**；公开可用的铁路路由服务不稳定，因此未强行实现铁路专用线路，UI 标记为“地面走廊”。
+- **火车/高铁**：当前沿地面走廊生成，**不是铁路轨道**；没有稳定可用的公共铁路路由，UI 标记为“地面走廊”。
 - **飞机**：大圆航线；**轮船**：内置 SeaRoute 海运网络。
 
 ### 地图与数据
@@ -172,7 +182,7 @@ index.html                  界面
 i18n.js                     中英文文案
 app.js                      地图、路线、搜索、多媒体、动画、导出
 style.css                   界面样式
-server.mjs                  零依赖本地服务器（静态文件 + 只读资源路径接口）
+server.mjs                  本地静态服务器 + 只读资源接口
 data/china-cities.json      3,200 个城市/区县 + 137 个精选景点
 data/china-pois-extra.json  40 个城市的 Top10 景点（385 条）
 data/china-provinces.geojson
@@ -198,25 +208,26 @@ node scripts/build-extra-pois.mjs
 
 ### Overview
 
-TripTrail is a browser-only travel map animation studio. Pick stops, configure routes, photos, videos and vehicle icons, then preview or export a cinematic travel map video.
+TripTrail is a browser-only travel map animation studio. Pick stops, configure routes, photos, videos, vehicle icons and per-leg timing, then preview or export a cinematic travel map video.
 
-This repository is an independent, Chinese-first fork of [Fangyuan025/triptrail](https://github.com/Fangyuan025/triptrail). It keeps the original MIT license and adds China-specific maps, localization and richer stop media.
+This repository is an independent, Chinese-first fork of [Fangyuan025/triptrail](https://github.com/Fangyuan025/triptrail). It keeps the original MIT license and adds China-specific maps, localization and richer editing controls.
 
 ### What changed
 
-- **Chinese-first UI with EN/中 toggle**: the full interface, captions, stop labels and icon settings switch language instantly.
+- **Chinese-first UI with EN/中 toggle**: interface, captions, stop labels, city labels and icon settings switch language instantly.
 - **China mode**: China bounds, AMap Chinese basemaps, local province/prefecture/district borders, offline city index and tiered city labels.
 - **9 basemaps**: AMap road, AMap satellite, Esri satellite, Voyager, Eclipse, Dark Matter, Liberty, Fiord and Positron.
 - **Offline China place index**: 3,200 cities/districts and 522 attractions with Chinese, pinyin and English search.
 - **Tiered city labels**: capitals → prefectures → districts, with four display levels; waypoints always stay above city labels.
 - **Custom places CRUD**: add, list, edit, delete and search custom name/lng/lat places; linked stops update with the place.
 - **Plaintext custom-place JSON**: UTF-8 export/import, merge or replace, object/array formats and BOM support.
-- **Project config with absolute-path links**: save/load titles, stops, transport, icons, map settings, media timing/aspect and custom places in `.triptrail.json`. Photos, videos, GIFs, icons and music are stored as **absolute-path links** and re-opened by the local service on load — the file bytes are never embedded.
+- **Project config with absolute-path links**: save/load titles, stops, transport, **per-leg duration**, icons, map settings, media timing/aspect and custom places in `.triptrail.json`. Photos, videos, GIFs, icons and music are stored as absolute paths and reopened by the local service.
+- **Per-leg duration**: each leg accepts an exact 1–120 second duration; leave blank to compute from distance and global pace.
 - **Rich stop media**: multiple images, GIFs, videos and Live Photos per stop, stacked as cards and played in sequence.
-- **Drag-to-reorder media**: drag the thumbnails under a stop sideways to change the carousel and export order; the order is saved with the project config.
+- **Drag-to-reorder media**: drag thumbnails to change carousel/export order; the order is saved in the config.
 - **Correct dynamic timing**: GIF/video/Live cards extend automatically until playback finishes; static images use the configured interval; the last card never wraps to the first.
 - **Configurable media aspect**: original per-item aspect, or uniform 3:2 / 4:3 / 16:9 / 1:1 / 3:4.
-- **Per-leg vehicle icons**: transparent PNG, SVG, JPG, ICO, looping GIF or Emoji; size 16–140 px; art facing, east/west auto-flip and optional tangent rotation. Side-view art is mirrored upright, not rotated 180°.
+- **Per-leg vehicle icons**: transparent PNG, SVG, JPG, ICO, looping GIF or Emoji; 16–140 px; art facing, east/west auto-flip and optional tangent rotation. Side-view art is mirrored upright, not rotated 180°.
 - **Local vendor assets**: MapLibre GL and MP4 muxer are bundled; the static server has no npm runtime dependencies.
 
 ### Quick start
@@ -231,11 +242,17 @@ npm start
 
 Open **http://127.0.0.1:8742**.
 
-Use a normal HTTP server; do not open `index.html` via `file://`.
+Use `npm start` rather than opening `index.html` via `file://`; the map data and local resource API require HTTP.
+
+### Per-leg duration
+
+- Leave the **Leg duration** field empty to use the automatic distance/pace calculation.
+- Enter `1–120` seconds to fix that leg's travel animation to the exact duration.
+- It only affects the travel segment; approach, arrival and media timing keep their own settings.
 
 ### Resource files and absolute paths
 
-Photos, videos, GIFs, vehicle icons and background music are stored in the project config as **absolute-path links**, never as embedded bytes:
+Photos, videos, GIFs, vehicle icons and background music are stored in the project config as absolute-path links, never as embedded bytes:
 
 ```json
 {
@@ -248,22 +265,20 @@ Photos, videos, GIFs, vehicle icons and background music are stored in the proje
   "stops": [
     {
       "name": "West Lake",
+      "legDuration": 4.5,
       "media": [
-        { "kind": "image", "name": "1.jpg", "path": "C:\\Users\\you\\Pictures\\Yunnan\\1.jpg", "width": 4032, "height": 3024 },
-        { "kind": "video", "name": "2.mp4", "path": "C:\\Users\\you\\Pictures\\Yunnan\\2.mp4" }
-      ],
-      "icon": { "kind": "image", "name": "train.png", "path": "C:\\Users\\you\\Pictures\\Yunnan\\train.png" }
+        { "kind": "image", "name": "1.jpg", "path": "C:\\Users\\you\\Pictures\\Yunnan\\1.jpg" }
+      ]
     }
   ]
 }
 ```
 
-- **Resource folder**: pick the absolute folder once in “Project config”; media, icons and music added from there are linked automatically.
-- **Fill in resource paths**: without a folder, the app still looks for each file by **name + size** in the resource folder and in the usual local folders (Pictures, Videos, Music, Desktop, Downloads, Documents).
-- **Manual binding**: the chain badge on media thumbnails, the icon “Path” button and the music “Path” button accept a typed or browsed absolute path. Green means linked, amber means missing.
-- **Load and loss**: loading a config reopens every file by path. Entries whose file moved or was deleted stay in the config (they are never silently dropped) and come back once the file is available again.
-- **Local read-only service**: browsers do not reveal the path of a file picked in the dialog, so `server.mjs` exposes read-only `/api/fs/*` endpoints (list folders, stream a file by absolute path, with Range support for video seeking). They only answer on `127.0.0.1`, require a random per-process token and only allow media/icon/music extensions.
-- **Static hosting only**: without `npm start`, paths are still written to the config but cannot be reopened on load, and the UI says so.
+- **Resource folder**: choose the folder once in “Project config”; media, icons and music added from there are linked automatically.
+- **Name + size lookup**: without a resource folder, files are searched in common folders (Pictures, Videos, Music, Desktop, Downloads, Documents) by name and size.
+- **Manual binding**: chain buttons on media thumbnails, the icon “Path” button and the music “Path” button accept a typed or browsed absolute path. Green = linked, amber = missing.
+- **Local read-only service**: `server.mjs` exposes read-only `/api/fs/*` endpoints bound to `127.0.0.1`, with Range support for video seeking, a random per-process token and media/icon/music extension restrictions.
+- **Static hosting only**: without `npm start`, paths are still written to the config but cannot be reopened on load.
 
 ### Notes and limitations
 

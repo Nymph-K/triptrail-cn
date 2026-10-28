@@ -1515,6 +1515,14 @@ function renderStops() {
         </select>
         <span class="route-note ${routeKey}" title="${esc(t('routeHint'))}">${esc(t(routeKey))}</span>
       </div>`;
+    const durationRow = i === 0 ? '' : `
+      <div class="leg-duration">
+        <label>${esc(t('legDuration'))}
+          <input type="number" min="1" max="120" step="0.5" value="${Number(s.legDuration) > 0 ? Number(s.legDuration) : ''}" placeholder="${esc(t('legDurationAuto'))}" data-leg-duration="${s.id}" />
+          <span>${LANG === 'zh' ? '秒' : 's'}</span>
+        </label>
+        <span class="hint">${esc(t('legDurationHint'))}</span>
+      </div>`;
     const mediaStrip = media.length ? `
       <div class="media-strip" data-media-strip="${s.id}" title="${esc(t('mediaDragHint'))}">
         ${media.map(m => `
@@ -1538,7 +1546,7 @@ function renderStops() {
         <button class="mini" data-up="${s.id}" title="${esc(t('tipUp'))}">${svgIcon('up')}</button>
         <button class="mini" data-down="${s.id}" title="${esc(t('tipDown'))}">${svgIcon('down')}</button>
         <button class="mini" data-del="${s.id}" title="${esc(t('tipRemove'))}">${svgIcon('x')}</button>
-      </div>${legSelect}${i === 0 ? '' : legIconControls(s)}${mediaStrip}`;
+      </div>${legSelect}${durationRow}${i === 0 ? '' : legIconControls(s)}${mediaStrip}`;
     ol.appendChild(li);
   });
   $('#stop-count').textContent = stops.length;
@@ -1554,6 +1562,12 @@ function renderStops() {
   ol.querySelectorAll('[data-mode]').forEach(sel => sel.onchange = () => {
     const s = stops.find(x => x.id === sel.dataset.mode);
     if (s) { s.mode = sel.value; renderStops(); refreshRoutePreview(); schedulePlaceLayer(); }
+  });
+  ol.querySelectorAll('[data-leg-duration]').forEach(inp => inp.onchange = () => {
+    const s = stops.find(x => x.id === inp.dataset.legDuration);
+    if (!s) return;
+    const v = parseFloat(inp.value);
+    s.legDuration = Number.isFinite(v) && v > 0 ? clamp(v, 1, 120) : null;
   });
   ol.querySelectorAll('[data-photo]').forEach(b => b.onclick = () => {
     photoTargetId = b.dataset.photo;
@@ -2442,6 +2456,7 @@ function configPayload() {
       name: s.name, nameZh: s.nameZh || '', nameEn: s.nameEn || '',
       lng: s.lng, lat: s.lat, mode: s.mode || 'plane',
       mediaInterval: s.mediaInterval || null,
+      legDuration: s.legDuration || null,
       icon: serializeIcon(s.icon),
       // Absolute-path links in carousel order: the saved order is the play order.
       // Entries that could not be reopened when the config was loaded stay in
@@ -2542,6 +2557,7 @@ async function loadConfigFile(file) {
           nameZh: x.nameZh || '', nameEn: x.nameEn || '',
           lng: Number(x.lng), lat: Number(x.lat), mode: MODES[x.mode] ? x.mode : 'plane',
           mediaInterval: Number(x.mediaInterval) > 0 ? Number(x.mediaInterval) : null,
+          legDuration: Number(x.legDuration) > 0 ? clamp(Number(x.legDuration), 1, 120) : null,
           media: [],
           missingMedia: [],
           icon: deserializeIcon(x.icon),
@@ -3202,6 +3218,12 @@ function overviewCam() {
   return { center: [c.lng, c.lat], zoom: map.getZoom(), pitch: 0 };
 }
 
+function legTravelDurationMs(leg) {
+  const explicit = Number(leg && leg.to && leg.to.legDuration);
+  if (Number.isFinite(explicit) && explicit > 0) return clamp(explicit * 1000, 1000, 120000);
+  return clamp(2200 + leg.dist * 1.1, 2200, 7000) / settings.pace;
+}
+
 function buildTimeline() {
   const p = settings.pace;
   const pitchCruise = settings.globe ? 0 : (settings.pitch ? 16 : 0);
@@ -3238,7 +3260,7 @@ function buildTimeline() {
       mode: modeLabel(leg.modeKey), km: Math.round(leg.dist),
     });
     add('approach', clamp(750 / p, 350, 950), { a: prevCam, b: startCam, caption, reached: i + 1 });
-    add('travel', clamp(2200 + leg.dist * 1.1, 2200, 7000) / p, { leg: i, caption, pitchCruise, pitchMax, reached: i + 1 });
+    add('travel', legTravelDurationMs(leg), { leg: i, caption, pitchCruise, pitchMax, reached: i + 1 });
     add('arrival', clamp(680 / p, 400, 950), { a: endCam, b: stopCam, leg: i, caption, reached: i + 2 });
     addMediaSegment(leg.to, stopCam, i + 2);
     prevCam = stopCam;
